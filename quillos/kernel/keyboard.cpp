@@ -1,5 +1,5 @@
-#include "console.h"
 #include "io.h"
+#include "shell.h"
 #include <stdint.h>
 
 const char scancode_to_ascii[] = {
@@ -12,16 +12,14 @@ const char scancode_to_ascii[] = {
 extern "C" void keyboard_handler_main() {
     uint8_t scancode = inb(0x60);
 
-    // If bit 7 is clear, it's a "press" event
     if (!(scancode & 0x80)) {
         if (scancode < sizeof(scancode_to_ascii)) {
             char c = scancode_to_ascii[scancode];
             if (c > 0) {
-                console_putc(c);
+                shell_update(c); // Pass the char to the shell logic
             }
         }
     }
 
-    // Send End of Interrupt to Master PIC
-    outb(0x20, 0x20);
+    outb(0x20, 0x20); // EOI
 }

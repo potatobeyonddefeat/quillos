@@ -10,7 +10,8 @@ build/font.o \
 build/console.o \
 build/idt.o \
 build/keyboard.o \
-build/interrupts.o
+build/interrupts.o \
+build/shell.o
 
 all: iso/kernel.elf
 
@@ -34,6 +35,9 @@ build/keyboard.o: kernel/keyboard.cpp
 
 build/interrupts.o: kernel/interrupts.asm
 	$(AS) -f elf64 $< -o $@
+
+build/shell.o: kernel/shell.cpp
+	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
 	rm -rf build/*
