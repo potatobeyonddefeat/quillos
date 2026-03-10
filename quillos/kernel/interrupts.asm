@@ -1,9 +1,5 @@
 [bits 64]
-
-; External C++ handler
 extern keyboard_handler_main
-
-; Exported symbols for idt.cpp
 global keyboard_handler_stub
 global load_idt
 global dummy_handler
@@ -11,10 +7,7 @@ global dummy_handler
 section .text
 
 keyboard_handler_stub:
-    push rbp
-    mov rbp, rsp
-    
-    ; Save caller-saved registers (The "Scratch" registers)
+    ; Save all registers that might be used
     push rax
     push rcx
     push rdx
@@ -24,20 +17,20 @@ keyboard_handler_stub:
     push r9
     push r10
     push r11
+    push rbp
 
-    ; Align stack to 16-bytes for C++ ABI
-    ; We save the old RSP to restore it later
-    mov rax, rsp
-    and rsp, -16
-    push rax 
+    cld                 ; Clear direction flag for C ABI
+    mov rbp, rsp
+    sub rsp, 8          ; Re-align if necessary (Pushing 10 regs = 80 bytes,
+                        ; plus 5 regs from CPU = 40 bytes. Total 120.
+                        ; 120 is not div by 16, so we sub 8.)
+    and rsp, -16        ; Force 16-byte alignment
 
     call keyboard_handler_main
 
-    ; Restore original RSP from the top of the stack
-    pop rax
-    mov rsp, rax
-    
-    ; Restore registers
+    ; Restore original stack pointer and registers
+    mov rsp, rbp
+    pop rbp
     pop r11
     pop r10
     pop r9
@@ -47,13 +40,15 @@ keyboard_handler_stub:
     pop rdx
     pop rcx
     pop rax
-    
-    pop rbp
     iretq
 
 load_idt:
-    lidt [rdi]    ; RDI holds the pointer to idt_ptr
+    lidt [rdi]
     ret
 
 dummy_handler:
+    push rax
+    mov al, 0x20
+    out 0x20, al
+    pop rax
     iretq

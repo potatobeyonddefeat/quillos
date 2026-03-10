@@ -1,42 +1,30 @@
 CC = gcc
 AS = nasm
 
-CFLAGS = -ffreestanding -O2 -Wall -Wextra -m64 -mcmodel=kernel -fno-pie -no-pie -Iinclude
+# ADDED -mno-red-zone to prevent interrupt stack corruption
+CFLAGS = -ffreestanding -O2 -Wall -Wextra -m64 -mcmodel=kernel -fno-pie -no-pie -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -Iinclude
 LDFLAGS = -T linker.ld
 
 KERNEL_OBJS = \
-build/kernel.o \
-build/font.o \
-build/console.o \
-build/idt.o \
-build/keyboard.o \
-build/interrupts.o \
-build/shell.o
+    build/kernel.o \
+    build/font.o \
+    build/console.o \
+    build/idt.o \
+    build/keyboard.o \
+    build/interrupts.o \
+    build/shell.o
 
 all: iso/kernel.elf
 
 iso/kernel.elf: $(KERNEL_OBJS)
 	ld $(LDFLAGS) -o iso/kernel.elf $(KERNEL_OBJS)
 
-build/kernel.o: kernel/kernel.cpp
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/font.o: kernel/font.cpp
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/console.o: kernel/console.cpp
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/idt.o: kernel/idt.cpp
-	$(CC) $(CFLAGS) -c $< -o $@
-
-build/keyboard.o: kernel/keyboard.cpp
-	$(CC) $(CFLAGS) -c $< -o $@
-
+# Rule for Assembly files
 build/interrupts.o: kernel/interrupts.asm
 	$(AS) -f elf64 $< -o $@
 
-build/shell.o: kernel/shell.cpp
+# Pattern rule for all C++ files ensures CFLAGS are always applied
+build/%.o: kernel/%.cpp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:

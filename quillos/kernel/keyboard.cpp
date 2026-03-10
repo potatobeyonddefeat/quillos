@@ -10,16 +10,19 @@ const char scancode_to_ascii[] = {
 };
 
 extern "C" void keyboard_handler_main() {
+    // 1. Read data
     uint8_t scancode = inb(0x60);
+    
+    // 2. Send EOI immediately so PIC can handle future interrupts
+    outb(0x20, 0x20); 
 
+    // 3. Process key
     if (!(scancode & 0x80)) {
         if (scancode < sizeof(scancode_to_ascii)) {
             char c = scancode_to_ascii[scancode];
             if (c > 0) {
-                shell_update(c); // Pass the char to the shell logic
+                shell_update(c);
             }
         }
     }
-
-    outb(0x20, 0x20); // EOI
 }

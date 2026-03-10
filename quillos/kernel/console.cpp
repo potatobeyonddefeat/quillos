@@ -2,21 +2,30 @@
 #include "console.h"
 #include "font.h"
 
+// 1. Constants and Configuration
+static const int SCREEN_WIDTH = 1024;
+static const int SCREEN_HEIGHT = 768;
+static const int CHAR_W = 8;
+static const int CHAR_H = 8;
+
+// 2. State Variables (Moved to top so all functions can see them)
 static uint32_t* framebuffer;
 static uint32_t pitch;
 static int cursor_x = 10;
 static int cursor_y = 10;
-
-// Adjust these based on your Limine initialization if needed
-static const int SCREEN_WIDTH = 1024; 
-static const int CHAR_W = 8;
-static const int CHAR_H = 8;
-static const uint32_t BG_COLOR = 0x0000FF; // Blue
-static const uint32_t FG_COLOR = 0xFFFFFF; // White
+static uint32_t current_bg_color = 0x0000FF; // Default Blue
+static uint32_t current_fg_color = 0xFFFFFF; // Default White
 
 void console_init(uint32_t* fb, uint64_t fb_pitch) {
     framebuffer = fb;
     pitch = fb_pitch / 4;
+
+    // Fix issue with backspacing not matching starting color
+    console_clear();
+}
+
+void set_bg_color(uint32_t color) {
+    current_bg_color = color;
 }
 
 void draw_rect(int x, int y, int w, int h, uint32_t color) {
@@ -39,28 +48,24 @@ void draw_char(char c, int x, int y, uint32_t color) {
     }
 }
 
+void console_clear() {
+    for (uint64_t y = 0; y < SCREEN_HEIGHT; y++) {
+        for (uint64_t x = 0; x < pitch; x++) {
+             framebuffer[y * pitch + x] = current_bg_color;
+        }
+    }
+    cursor_x = 10;
+    cursor_y = 10;
+}
+
 void console_backspace() {
-    // We check against 10 because that's your starting cursor_x
     if (cursor_x > 10) {
         cursor_x -= CHAR_W;
     } else if (cursor_y > 10) {
         cursor_y -= (CHAR_H + 4);
-        // Calculate the end of the previous line
-        // (SCREEN_WIDTH - margin) / CHAR_W * CHAR_W
         cursor_x = ((SCREEN_WIDTH - 20) / CHAR_W) * CHAR_W;
     }
-
-    // Draw a rectangle using the background color (Blue) to "erase" it
-    draw_rect(cursor_x, cursor_y, CHAR_W, CHAR_H, BG_COLOR);
-}
-
-void console_clear() {
-    // Fill the whole screen with the background color
-    draw_rect(0, 0, SCREEN_WIDTH, 1024, BG_COLOR); // Assuming 1024 height
-    
-    // Reset cursor to the top-left margin
-    cursor_x = 10;
-    cursor_y = 10;
+    draw_rect(cursor_x, cursor_y, CHAR_W, CHAR_H, current_bg_color);
 }
 
 void console_putc(char c) {
@@ -68,17 +73,14 @@ void console_putc(char c) {
         cursor_x = 10;
         cursor_y += CHAR_H + 4;
     } else if (c == '\b') {
-        console_backspace(); // Use the logic above
+        console_backspace();
     } else {
-        draw_char(c, cursor_x, cursor_y, FG_COLOR);
+        draw_char(c, cursor_x, cursor_y, current_fg_color);
         cursor_x += CHAR_W;
-        
-        // Wrap to next line if we hit the edge
-        if (cursor_x > SCREEN_WIDTH - 10) {
-            console_putc('\n');
-        }
+        if (cursor_x > SCREEN_WIDTH - 10) console_putc('\n');
     }
 }
+
 void console_print(const char* str) {
     while (*str) {
         console_putc(*str++);
