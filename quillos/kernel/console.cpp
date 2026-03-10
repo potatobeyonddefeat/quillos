@@ -3,75 +3,60 @@
 #include "font.h"
 
 static uint32_t* framebuffer;
-static uint64_t pitch;
+static uint32_t pitch;
+static int cursor_x = 10;
+static int cursor_y = 10;
 
-static int cursor_x = 0;
-static int cursor_y = 0;
-
+// Adjust these based on your Limine initialization if needed
+static const int SCREEN_WIDTH = 1024; 
 static const int CHAR_W = 8;
 static const int CHAR_H = 8;
+static const uint32_t BG_COLOR = 0x0000FF; // Blue
+static const uint32_t FG_COLOR = 0xFFFFFF; // White
 
-void console_init(uint32_t* fb, uint64_t p) {
+void console_init(uint32_t* fb, uint64_t fb_pitch) {
     framebuffer = fb;
-    pitch = p / 4;
-    cursor_x = 10;
-    cursor_y = 10;
+    pitch = fb_pitch / 4;
 }
 
-static void draw_char(char c, int px, int py) {
-
-    const uint8_t* glyph = 0;
-
-    switch(c) {
-        case 'Q': glyph = font_Q; break;
-        case 'u': glyph = font_u; break;
-        case 'i': glyph = font_i; break;
-        case 'l': glyph = font_l; break;
-        case 'O': glyph = font_O; break;
-        case 'S': glyph = font_S; break;
-        case 'v': glyph = font_v; break;
-        case '.': glyph = font_dot; break;
-        case '1': glyph = font_1; break;
-        case '0': glyph = font_0; break;
-        case 'D': glyph = font_D; break;
-        case 'e': glyph = font_e; break;
-        case 'p': glyph = font_p; break;
-        case 'r': glyph = font_r; break;
-        case 'B': glyph = font_B; break;
-        case 'd': glyph = font_d; break;
-        case '>': glyph = font_arrow; break;
-        case ' ': glyph = font_space; break;
-	case 'o': glyph = font_o; break;
-	case 'b': glyph = font_b; break;
-        default: return;
-    }
-
-    for (int y = 0; y < 8; y++) {
-        for (int x = 0; x < 8; x++) {
-
-            if (glyph[y] & (1 << (7 - x))) {
-                framebuffer[(py + y) * pitch + (px + x)] = 0xFFFFFFFF;
-            }
-
+void draw_rect(int x, int y, int w, int h, uint32_t color) {
+    for (int i = 0; i < h; i++) {
+        for (int j = 0; j < w; j++) {
+            framebuffer[(y + i) * pitch + (x + j)] = color;
         }
+    }
+}
+
+void draw_char(char c, int x, int y, uint32_t color) {
+    if ((unsigned char)c > 127) c = '?';
+    for (int row = 0; row < 8; row++) {
+        uint8_t line = font[(int)c][row];
+        for (int col = 0; col < 8; col++) {
+            if (line & (1 << col)) {
+                framebuffer[(y + row) * pitch + (x + col)] = color;
+            }
+        }
+    }
+}
+
+void console_putc(char c) {
+    if (c == '\n') {
+        cursor_x = 10;
+        cursor_y += CHAR_H + 4;
+    } else if (c == '\b') {
+        if (cursor_x > 10) {
+            cursor_x -= CHAR_W;
+            draw_rect(cursor_x, cursor_y, CHAR_W, CHAR_H, BG_COLOR);
+        }
+    } else {
+        draw_char(c, cursor_x, cursor_y, FG_COLOR);
+        cursor_x += CHAR_W;
+        if (cursor_x > SCREEN_WIDTH - 10) console_putc('\n');
     }
 }
 
 void console_print(const char* str) {
-
     while (*str) {
-
-        if (*str == '\n') {
-            cursor_x = 10;
-            cursor_y += CHAR_H + 2;
-            str++;
-            continue;
-        }
-
-        draw_char(*str, cursor_x, cursor_y);
-
-        cursor_x += CHAR_W;
-
-        str++;
+        console_putc(*str++);
     }
 }

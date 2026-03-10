@@ -1,50 +1,49 @@
-#include <limine.h>
 #include <stdint.h>
 #include <stddef.h>
-
+#include "limine.h"
 #include "console.h"
+#include "idt.h"
 
-__attribute__((used, section(".limine_requests")))
-static volatile LIMINE_BASE_REVISION(3);
-
-__attribute__((used, section(".limine_requests")))
+// Limine requests
 static volatile struct limine_framebuffer_request framebuffer_request = {
     .id = LIMINE_FRAMEBUFFER_REQUEST,
-    .revision = 0
+    .revision = 0,
+    .response = NULL
 };
 
-static void hcf() {
+// Halts the CPU in a loop
+void done() {
     for (;;) {
-        asm("hlt");
+        __asm__ ("hlt");
     }
 }
 
-extern "C" void _start() {
+// Separate function for the shell logic
+void start_shell() {
+    console_print("\nQuillOS v0.1\n> ");
+    
+    // We stay here and let interrupts handle the typing
+    for (;;) {
+        __asm__ ("hlt");
+    }
+}
 
-    if (framebuffer_request.response == NULL ||
-        framebuffer_request.response->framebuffer_count < 1) {
-        hcf();
+extern "C" void _start(void) {
+    // 1. Ensure we have a framebuffer
+    if (framebuffer_request.response == NULL || framebuffer_request.response->framebuffer_count < 1) {
+        done();
     }
 
-    struct limine_framebuffer *fb =
-        framebuffer_request.response->framebuffers[0];
+    struct limine_framebuffer *fb = framebuffer_request.response->framebuffers[0];
 
-    uint32_t *pixels = (uint32_t*)fb->address;
+    // 2. Initialize Console
+    console_init((uint32_t*)fb->address, fb->pitch);
 
-    /* Fill screen blue */
-    for (uint64_t y = 0; y < fb->height; y++) {
-        for (uint64_t x = 0; x < fb->width; x++) {
-            pixels[y * (fb->pitch / 4) + x] = 0x000030AA;
-        }
-    }
+    // 3. Initialize IDT (This calls pic_remap and sti)
+    idt_init();
 
-    /* Initialize console */
-    console_init(pixels, fb->pitch);
+    // 4. Launch Shell
+    start_shell();
 
-    /* Print boot text */
-    console_print("QuillOS v0.1\n");
-    console_print("Developer Build\n\n");
-    console_print("> ");
-
-    hcf();
+    done();
 }
