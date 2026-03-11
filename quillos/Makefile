@@ -14,7 +14,8 @@ KERNEL_OBJS = \
     build/interrupts.o \
     build/shell.o \
     build/timer.o \
-    build/utils.o
+    build/utils.o \
+    build/filesystem.o
 
 all: iso/kernel.elf
 
