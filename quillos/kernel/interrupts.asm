@@ -1,13 +1,17 @@
 [bits 64]
 extern keyboard_handler_main
+extern timer_handler_main
+
 global keyboard_handler_stub
+global timer_handler_stub
 global load_idt
 global dummy_handler
 
 section .text
 
-keyboard_handler_stub:
-    ; Save all registers that might be used
+; Helper Macro to wrap hardware interrupt stubs
+%macro HW_INTERRUPT_STUB 2
+%1:
     push rax
     push rcx
     push rdx
@@ -21,14 +25,11 @@ keyboard_handler_stub:
 
     cld                 ; Clear direction flag for C ABI
     mov rbp, rsp
-    sub rsp, 8          ; Re-align if necessary (Pushing 10 regs = 80 bytes,
-                        ; plus 5 regs from CPU = 40 bytes. Total 120.
-                        ; 120 is not div by 16, so we sub 8.)
-    and rsp, -16        ; Force 16-byte alignment
+    sub rsp, 8          ; Re-align for 16-byte boundary
+    and rsp, -16        
 
-    call keyboard_handler_main
+    call %2
 
-    ; Restore original stack pointer and registers
     mov rsp, rbp
     pop rbp
     pop r11
@@ -41,6 +42,10 @@ keyboard_handler_stub:
     pop rcx
     pop rax
     iretq
+%endmacro
+
+HW_INTERRUPT_STUB keyboard_handler_stub, keyboard_handler_main
+HW_INTERRUPT_STUB timer_handler_stub, timer_handler_main
 
 load_idt:
     lidt [rdi]

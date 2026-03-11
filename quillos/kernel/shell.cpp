@@ -6,20 +6,25 @@ extern void console_clear();
 extern void console_backspace();
 extern void console_putc(char c);
 extern void set_bg_color(uint32_t color);
+extern void itoa(uint64_t n, char* str); // Declaration
+extern volatile uint64_t ticks;
+
+// Access the global tick counter from timer.cpp
+extern volatile uint64_t ticks; 
 
 #define kprint console_print
 #define SHELL_BUFFER_SIZE 256
 char shell_buffer[SHELL_BUFFER_SIZE];
 int shell_ptr = 0;
 
-// Internal safe string length to avoid SSE crashes
+// Internal safe string length
 int safe_strlen(const char* s) {
     int len = 0;
     while (s[len] != '\0') len++;
     return len;
 }
 
-// Internal safe string compare to avoid SSE crashes
+// Internal safe string compare
 bool safe_compare(const char* a, const char* b) {
     int i = 0;
     while (a[i] != '\0' && b[i] != '\0') {
@@ -39,7 +44,7 @@ void process_command(char* input) {
     char cmd[64];
     char arg[64];
 
-    // Manual zeroing
+    // Zero out local buffers
     for(int x = 0; x < 64; x++) {
         cmd[x] = 0;
         arg[x] = 0;
@@ -64,22 +69,48 @@ void process_command(char* input) {
 
     if (safe_strlen(cmd) == 0) return;
 
-    // --- LOGIC CHECK ---
     if (safe_compare(cmd, "help")) {
         kprint("\nCommands: help, cls, ver, halt, reboot, color");
-    } 
+    }
     else if (safe_compare(cmd, "cls")) {
         console_clear();
+        shell_init(); 
     }
     else if (safe_compare(cmd, "ver")) {
         kprint("\nQuillOS v0.1");
+    }
+    else if (safe_compare(cmd, "uptime")) {
+        char time_buf[32];
+        itoa(ticks / 1000, time_buf); // Convert ms to seconds
+        kprint("\nUptime: ");
+        kprint(time_buf);
+        kprint(" seconds.");
     }
     else if (safe_compare(cmd, "color")) {
         if (safe_compare(arg, "red")) set_bg_color(0xFF0000);
         else if (safe_compare(arg, "blue")) set_bg_color(0x0000FF);
         else if (safe_compare(arg, "green")) set_bg_color(0x00FF00);
-        else kprint("\nTry: red, blue, or green");
+        else if (safe_compare(arg, "dark")) set_bg_color(0x111111); 
+        else kprint("\nTry: red, blue, green, or dark");
+        
         console_clear();
+        kprint("\nBackground updated.");
+    }
+    else if (safe_compare(cmd, "reboot")) {
+        kprint("\nRebooting...");
+        // Pulse Keyboard Controller
+        for (int j = 0; j < 100; j++) {
+            outb(0x64, 0xFE);
+        }
+        
+        // Force Triple Fault fallback
+        struct {
+            uint16_t limit;
+            uint64_t base;
+        } __attribute__((packed)) invalid_idtr = {0, 0};
+        
+        asm volatile("lidt %0; int3" :: "m"(invalid_idtr));
+        return;
     }
     else if (safe_compare(cmd, "halt")) {
         kprint("\nHalting...");
