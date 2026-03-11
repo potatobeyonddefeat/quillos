@@ -12,7 +12,9 @@ KERNEL_OBJS = \
     build/idt.o \
     build/keyboard.o \
     build/interrupts.o \
-    build/shell.o
+    build/shell.o \
+    build/timer.o \
+    build/utils.o
 
 all: iso/kernel.elf
 

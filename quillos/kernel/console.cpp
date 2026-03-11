@@ -2,25 +2,21 @@
 #include "console.h"
 #include "font.h"
 
-// 1. Constants and Configuration
 static const int SCREEN_WIDTH = 1024;
 static const int SCREEN_HEIGHT = 768;
 static const int CHAR_W = 8;
 static const int CHAR_H = 8;
 
-// 2. State Variables (Moved to top so all functions can see them)
 static uint32_t* framebuffer;
 static uint32_t pitch;
 static int cursor_x = 10;
 static int cursor_y = 10;
-static uint32_t current_bg_color = 0x0000FF; // Default Blue
-static uint32_t current_fg_color = 0xFFFFFF; // Default White
+static uint32_t current_bg_color = 0x0000FF; 
+static uint32_t current_fg_color = 0xFFFFFF; 
 
 void console_init(uint32_t* fb, uint64_t fb_pitch) {
     framebuffer = fb;
     pitch = fb_pitch / 4;
-
-    // Fix issue with backspacing not matching starting color
     console_clear();
 }
 
@@ -54,8 +50,8 @@ void console_clear() {
              framebuffer[y * pitch + x] = current_bg_color;
         }
     }
-    cursor_x = 10;
-    cursor_y = 10;
+    // Cursor reset removed to preserve position during color changes.
+    // Use shell_init() or manual reset if a full clear is needed.
 }
 
 void console_backspace() {
