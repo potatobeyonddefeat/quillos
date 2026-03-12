@@ -31,33 +31,59 @@ namespace QuillFS {
         }
 
         this->total_blocks = sblck->total_blocks;
+
+        this->block_bitmap.buffer = reinterpret_cast<uint64_t*>(disk_base_address + sizeof(Superblock));
+
+        this->block_bitmap.size = (this->total_blocks + 63) / 64; 
+
         return true;
     };
 
     void* Filesystem::quick_allocate(size_t requested_size) {
-
+        QuillFS::Superblock* disk_header = reinterpret_cast<QuillFS::Superblock*>(disk_base_address);
         size_t blocks_needed = (requested_size + (BLOCK_SIZE - 1)) / BLOCK_SIZE;
 
-        QuillFS::Superblock* disk_header = reinterpret_cast<QuillFS::Superblock*>(disk_base_address);
-
+        // Calculate how many blocks the Superblock + Bitmap occupy
+        size_t bitmap_bytes = (this->total_blocks + 7) / 8;
+        size_t metadata_bytes = sizeof(Superblock) + bitmap_bytes;
+        size_t first_usable_block = (metadata_bytes + BLOCK_SIZE - 1) / BLOCK_SIZE;
         this->total_blocks = disk_header->total_blocks;
 
-        for(size_t i = 2; i < total_blocks; i++) {
-            if (is_block_free(i)) {
-                // For now, we assume it fits; mark it taken
-                mark_used(i, blocks_needed);
-                // Return the address: Start + (Index * 4096)
-                return reinterpret_cast<void*>(this->disk_base_address + (i * BLOCK_SIZE));
+        for(size_t i = 0; i < block_bitmap.size; i++) {
+            // If the 64-bit chunk is NOT all 1s, there is at least one free block here
+            if (block_bitmap.buffer[i] != 0xFFFFFFFFFFFFFFFF) {
+                
+                // Use a built-in CPU instruction to find the first '0' bit
+                // __builtin_ctzl finds "Count Trailing Zeros" (the first 0 from the right)
+                // We invert the number (~) so the first 0 becomes the first 1
+                uint64_t first_free_bit = __builtin_ctzl(~block_bitmap.buffer[i]);
+        
+                uint64_t absolute_index = (i * 64) + first_free_bit;
+                
+                if(absolute_index < first_usable_block) {
+                    continue; // Skip blocks reserved for metadata
+                }
+                // Double check we haven't gone past the total_blocks limit
+                if (absolute_index < total_blocks) {
+                     mark_used(absolute_index, blocks_needed);
+                     return reinterpret_cast<void*>(this->disk_base_address + (absolute_index * BLOCK_SIZE));
+                }
             }
         }
         return nullptr; // No suitable block found
     };
     bool Filesystem::is_block_free(uint64_t block_index) { 
-        return true; //placeholder implementation, should check the bitmap to see if the block is free
-    };
+        // Using ! because [] returns true if bit is 1 (Used)
+        // So if bit is 0 (False), the block is free.
+        return !block_bitmap[block_index]; 
+    }
+
     void Filesystem::mark_used(uint64_t block_index, size_t count) { 
-        // Mark blocks as used in the bitmap
-    };
+        for(size_t i = 0; i < count; i++) {
+            // Mark as true to indicate it is now occupied
+            block_bitmap.set(block_index + i, true);
+        }
+    }
     void Filesystem::optimize() { 
         // Optimization logic to reduce fragmentation would go here
     };

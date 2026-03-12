@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <limine.h>
-
+#include "Bitmap.h"
 namespace QuillFS {
     extern volatile struct limine_memmap_request memmap_request;
     static constexpr uint64_t QUILL_MAGIC = 0x5175696C6C4F5300; //QuillOS in hex
@@ -12,7 +12,7 @@ namespace QuillFS {
         uint64_t block_size;
         uint64_t first_data_block;
     };
-
+    
     class Filesystem {
         public:
             Filesystem() = default;
@@ -25,5 +25,6 @@ namespace QuillFS {
             uintptr_t disk_base_address = 0;
             bool is_block_free(uint64_t block_index);
             void mark_used(uint64_t block_index, size_t count);
+            Bitmap block_bitmap;
     };
 }

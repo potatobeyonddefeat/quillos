@@ -15,7 +15,8 @@ KERNEL_OBJS = \
     build/shell.o \
     build/timer.o \
     build/utils.o \
-    build/filesystem.o
+    build/filesystem.o \
+    build/bitmap.o
 
 all: iso/kernel.elf
 
