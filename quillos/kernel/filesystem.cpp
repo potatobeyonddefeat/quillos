@@ -1,5 +1,8 @@
 #include "filesystem.h"
 
+// Access console for debug logging
+extern void console_print(const char* str);
+
 namespace QuillFS {
 
     // Simple string helpers (no stdlib available)
@@ -36,6 +39,33 @@ namespace QuillFS {
         for (size_t i = 0; i < n; i++) p[i] = val;
     }
 
+    // Strip trailing slashes from path (except root "/")
+    static void normalize_path(const char* input, char* output) {
+        fs_strcpy(output, input);
+        int len = fs_strlen(output);
+        while (len > 1 && output[len - 1] == '/') {
+            output[len - 1] = '\0';
+            len--;
+        }
+    }
+
+    static void fs_log(const char* prefix, const char* msg) {
+        console_print("\n[FS] ");
+        console_print(prefix);
+        console_print(": ");
+        console_print(msg);
+    }
+
+    static void fs_log2(const char* prefix, const char* key, const char* val) {
+        console_print("\n[FS]   ");
+        console_print(prefix);
+        console_print(" ");
+        console_print(key);
+        console_print("='");
+        console_print(val);
+        console_print("'");
+    }
+
     bool Filesystem::init() {
         // Zero out all entries
         for (uint32_t i = 0; i < MAX_FILES; i++) {
@@ -49,6 +79,7 @@ namespace QuillFS {
         entries[0].parent[0] = '\0';
         entries[0].size = 0;
 
+        fs_log("init", "filesystem initialized, root created");
         return true;
     }
 
@@ -74,12 +105,15 @@ namespace QuillFS {
     // Split "/foo/bar/baz" into parent="/foo/bar" name="baz"
     // Split "/foo" into parent="/" name="foo"
     void Filesystem::split_path(const char* path, char* parent_out, char* name_out) {
-        int len = fs_strlen(path);
+        // Normalize first to strip trailing slashes
+        char clean[MAX_PATH_LEN] = {0};
+        normalize_path(path, clean);
+        int len = fs_strlen(clean);
 
         // Find last '/'
         int last_slash = -1;
         for (int i = len - 1; i >= 0; i--) {
-            if (path[i] == '/') { last_slash = i; break; }
+            if (clean[i] == '/') { last_slash = i; break; }
         }
 
         if (last_slash <= 0) {
@@ -93,7 +127,7 @@ namespace QuillFS {
         // Name is everything after last slash
         int ni = 0;
         for (int i = last_slash + 1; i < len; i++) {
-            name_out[ni++] = path[i];
+            name_out[ni++] = clean[i];
         }
         name_out[ni] = '\0';
     }
@@ -103,14 +137,33 @@ namespace QuillFS {
     }
 
     bool Filesystem::mkdir(const char* path) {
-        if (!path || path[0] != '/') return false;
-        if (fs_strcmp(path, "/")) return false; // Root already exists
+        fs_log("mkdir", path ? path : "(null)");
+
+        if (!path || path[0] != '/') {
+            fs_log("mkdir", "FAIL: invalid path");
+            return false;
+        }
+
+        // Normalize path
+        char norm[MAX_PATH_LEN] = {0};
+        normalize_path(path, norm);
+
+        if (fs_strcmp(norm, "/")) {
+            fs_log("mkdir", "FAIL: root already exists");
+            return false;
+        }
 
         char parent[MAX_PATH_LEN] = {0};
         char name[MAX_NAME_LEN] = {0};
-        split_path(path, parent, name);
+        split_path(norm, parent, name);
 
-        if (fs_strlen(name) == 0) return false;
+        fs_log2("mkdir", "parent", parent);
+        fs_log2("mkdir", "name", name);
+
+        if (fs_strlen(name) == 0) {
+            fs_log("mkdir", "FAIL: empty name after split");
+            return false;
+        }
 
         // Check parent exists and is a directory
         // Parent "/" is always valid (entry 0)
@@ -120,31 +173,55 @@ namespace QuillFS {
             char pn[MAX_NAME_LEN] = {0};
             split_path(parent, pp, pn);
             int pi = find_entry(pp, pn);
-            if (pi < 0 || entries[pi].type != FILE_DIRECTORY) return false;
+            if (pi < 0 || entries[pi].type != FILE_DIRECTORY) {
+                fs_log("mkdir", "FAIL: parent dir not found");
+                return false;
+            }
         }
 
         // Check if already exists
-        if (path_exists(parent, name)) return false;
+        if (path_exists(parent, name)) {
+            fs_log("mkdir", "FAIL: already exists");
+            return false;
+        }
 
         int slot = find_free_slot();
-        if (slot < 0) return false;
+        if (slot < 0) {
+            fs_log("mkdir", "FAIL: no free slots");
+            return false;
+        }
 
         entries[slot].type = FILE_DIRECTORY;
         fs_strcpy(entries[slot].name, name);
         fs_strcpy(entries[slot].parent, parent);
         entries[slot].size = 0;
 
+        fs_log("mkdir", "OK");
         return true;
     }
 
     bool Filesystem::touch(const char* path) {
-        if (!path || path[0] != '/') return false;
+        fs_log("touch", path ? path : "(null)");
+
+        if (!path || path[0] != '/') {
+            fs_log("touch", "FAIL: invalid path");
+            return false;
+        }
+
+        char norm[MAX_PATH_LEN] = {0};
+        normalize_path(path, norm);
 
         char parent[MAX_PATH_LEN] = {0};
         char name[MAX_NAME_LEN] = {0};
-        split_path(path, parent, name);
+        split_path(norm, parent, name);
 
-        if (fs_strlen(name) == 0) return false;
+        fs_log2("touch", "parent", parent);
+        fs_log2("touch", "name", name);
+
+        if (fs_strlen(name) == 0) {
+            fs_log("touch", "FAIL: empty name");
+            return false;
+        }
 
         // Check parent exists
         if (!fs_strcmp(parent, "/")) {
@@ -152,14 +229,23 @@ namespace QuillFS {
             char pn[MAX_NAME_LEN] = {0};
             split_path(parent, pp, pn);
             int pi = find_entry(pp, pn);
-            if (pi < 0 || entries[pi].type != FILE_DIRECTORY) return false;
+            if (pi < 0 || entries[pi].type != FILE_DIRECTORY) {
+                fs_log("touch", "FAIL: parent dir not found");
+                return false;
+            }
         }
 
         // If already exists, just return true
-        if (path_exists(parent, name)) return true;
+        if (path_exists(parent, name)) {
+            fs_log("touch", "OK (already exists)");
+            return true;
+        }
 
         int slot = find_free_slot();
-        if (slot < 0) return false;
+        if (slot < 0) {
+            fs_log("touch", "FAIL: no free slots");
+            return false;
+        }
 
         entries[slot].type = FILE_REGULAR;
         fs_strcpy(entries[slot].name, name);
@@ -167,25 +253,40 @@ namespace QuillFS {
         entries[slot].size = 0;
         fs_memset(entries[slot].data, 0, MAX_FILE_DATA);
 
+        fs_log("touch", "OK");
         return true;
     }
 
     bool Filesystem::write_file(const char* path, const char* content) {
-        if (!path || path[0] != '/' || !content) return false;
+        fs_log("write", path ? path : "(null)");
+
+        if (!path || path[0] != '/' || !content) {
+            fs_log("write", "FAIL: invalid args");
+            return false;
+        }
+
+        char norm[MAX_PATH_LEN] = {0};
+        normalize_path(path, norm);
 
         char parent[MAX_PATH_LEN] = {0};
         char name[MAX_NAME_LEN] = {0};
-        split_path(path, parent, name);
+        split_path(norm, parent, name);
 
         int idx = find_entry(parent, name);
         if (idx < 0) {
-            // Auto-create the file
-            if (!touch(path)) return false;
+            fs_log("write", "auto-creating file");
+            if (!touch(norm)) return false;
             idx = find_entry(parent, name);
-            if (idx < 0) return false;
+            if (idx < 0) {
+                fs_log("write", "FAIL: could not create");
+                return false;
+            }
         }
 
-        if (entries[idx].type != FILE_REGULAR) return false;
+        if (entries[idx].type != FILE_REGULAR) {
+            fs_log("write", "FAIL: not a regular file");
+            return false;
+        }
 
         uint32_t len = (uint32_t)fs_strlen(content);
         if (len >= MAX_FILE_DATA) len = MAX_FILE_DATA - 1;
@@ -196,18 +297,34 @@ namespace QuillFS {
         }
         entries[idx].size = len;
 
+        fs_log("write", "OK");
         return true;
     }
 
     bool Filesystem::read_file(const char* path, char* output_buf, uint32_t buf_size) {
-        if (!path || path[0] != '/' || !output_buf) return false;
+        fs_log("read", path ? path : "(null)");
+
+        if (!path || path[0] != '/' || !output_buf) {
+            fs_log("read", "FAIL: invalid args");
+            return false;
+        }
+
+        char norm[MAX_PATH_LEN] = {0};
+        normalize_path(path, norm);
 
         char parent[MAX_PATH_LEN] = {0};
         char name[MAX_NAME_LEN] = {0};
-        split_path(path, parent, name);
+        split_path(norm, parent, name);
 
         int idx = find_entry(parent, name);
-        if (idx < 0 || entries[idx].type != FILE_REGULAR) return false;
+        if (idx < 0) {
+            fs_log("read", "FAIL: file not found");
+            return false;
+        }
+        if (entries[idx].type != FILE_REGULAR) {
+            fs_log("read", "FAIL: not a regular file");
+            return false;
+        }
 
         uint32_t copy_len = entries[idx].size;
         if (copy_len >= buf_size) copy_len = buf_size - 1;
@@ -217,11 +334,17 @@ namespace QuillFS {
         }
         output_buf[copy_len] = '\0';
 
+        fs_log("read", "OK");
         return true;
     }
 
     int Filesystem::ls(const char* path, char* output_buf, uint32_t buf_size) {
+        fs_log("ls", path ? path : "(null)");
+
         if (!path || !output_buf) return -1;
+
+        char norm[MAX_PATH_LEN] = {0};
+        normalize_path(path, norm);
 
         output_buf[0] = '\0';
         int count = 0;
@@ -231,10 +354,10 @@ namespace QuillFS {
             if (entries[i].type == FILE_UNUSED) continue;
 
             bool match = false;
-            if (fs_strcmp(path, "/")) {
+            if (fs_strcmp(norm, "/")) {
                 match = fs_strcmp(entries[i].parent, "/");
             } else {
-                match = fs_strcmp(entries[i].parent, path);
+                match = fs_strcmp(entries[i].parent, norm);
             }
 
             if (match) {
@@ -258,18 +381,35 @@ namespace QuillFS {
         }
 
         output_buf[pos] = '\0';
+        fs_log("ls", count > 0 ? "found entries" : "empty");
         return count;
     }
 
     bool Filesystem::rm(const char* path) {
-        if (!path || path[0] != '/' || fs_strcmp(path, "/")) return false;
+        fs_log("rm", path ? path : "(null)");
+
+        if (!path || path[0] != '/') {
+            fs_log("rm", "FAIL: invalid path");
+            return false;
+        }
+
+        char norm[MAX_PATH_LEN] = {0};
+        normalize_path(path, norm);
+
+        if (fs_strcmp(norm, "/")) {
+            fs_log("rm", "FAIL: cannot remove root");
+            return false;
+        }
 
         char parent[MAX_PATH_LEN] = {0};
         char name[MAX_NAME_LEN] = {0};
-        split_path(path, parent, name);
+        split_path(norm, parent, name);
 
         int idx = find_entry(parent, name);
-        if (idx < 0) return false;
+        if (idx < 0) {
+            fs_log("rm", "FAIL: not found");
+            return false;
+        }
 
         // If it's a directory, check it's empty
         if (entries[idx].type == FILE_DIRECTORY) {
@@ -286,7 +426,8 @@ namespace QuillFS {
 
             for (uint32_t i = 0; i < MAX_FILES; i++) {
                 if (entries[i].type != FILE_UNUSED && fs_strcmp(entries[i].parent, full_path)) {
-                    return false; // Directory not empty
+                    fs_log("rm", "FAIL: directory not empty");
+                    return false;
                 }
             }
         }
@@ -295,6 +436,7 @@ namespace QuillFS {
         fs_memset(&entries[idx], 0, sizeof(FileEntry));
         entries[idx].type = FILE_UNUSED;
 
+        fs_log("rm", "OK");
         return true;
     }
 
