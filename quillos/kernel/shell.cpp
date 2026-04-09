@@ -146,6 +146,8 @@ void process_command(char* input) {
         kprint("\n  netinfo       - Network status");
         kprint("\n  cluster       - Cluster status");
         kprint("\n  intinfo       - Interrupt statistics");
+        kprint("\n  spawn <name>  - Spawn a test task");
+        kprint("\n  kill <slot>   - Kill task by slot");
     }
     else if (safe_compare(cmd, "cls")) {
         console_clear();
@@ -332,16 +334,53 @@ void process_command(char* input) {
     else if (safe_compare(cmd, "ps")) {
         char buf[32];
         kprint("\nTasks ("); itoa(Scheduler::get_count(), buf); kprint(buf); kprint(" active):");
-        kprint("\n  ID  STATE    NAME");
+        kprint("\n  SLOT  ID  STATE     TICKS   NAME");
         for (uint32_t t = 0; t < Scheduler::MAX_TASKS; t++) {
             const Scheduler::Task* task = Scheduler::get_task(t);
             if (!task || task->state == Scheduler::TASK_UNUSED) continue;
             kprint("\n  ");
+            itoa(t, buf); kprint(buf);
+            kprint("     ");
             itoa(task->id, buf); kprint(buf);
-            if (task->state == Scheduler::TASK_RUNNING) kprint("   running  ");
-            else if (task->state == Scheduler::TASK_READY) kprint("   ready    ");
-            else if (task->state == Scheduler::TASK_BLOCKED) kprint("   blocked  ");
+            kprint("   ");
+            if (task->state == Scheduler::TASK_RUNNING)  kprint("running  ");
+            else if (task->state == Scheduler::TASK_READY) kprint("ready    ");
+            else if (task->state == Scheduler::TASK_SLEEPING) kprint("sleeping ");
+            else if (task->state == Scheduler::TASK_DEAD)  kprint("dead     ");
+            itoa(task->ticks_used, buf); kprint(buf);
+            kprint("  ");
             kprint(task->name);
+            if (t == Scheduler::get_current()) kprint(" *");
+        }
+    }
+    else if (safe_compare(cmd, "spawn")) {
+        if (safe_strlen(arg) == 0) {
+            kprint("\nUsage: spawn <name>");
+            kprint("\n  Available: counter, busy, sleeper");
+        } else {
+            kprint("\nSpawning not yet available from shell");
+            kprint("\n(Tasks are created programmatically for now)");
+        }
+    }
+    else if (safe_compare(cmd, "kill")) {
+        if (safe_strlen(arg) == 0) {
+            kprint("\nUsage: kill <slot>");
+        } else {
+            // Parse slot number
+            uint32_t slot = 0;
+            int j = 0;
+            while (arg[j] >= '0' && arg[j] <= '9') {
+                slot = slot * 10 + (arg[j] - '0');
+                j++;
+            }
+            if (Scheduler::kill_task(slot)) {
+                kprint("\nKilled task in slot ");
+                kprint(arg);
+            } else {
+                kprint("\nCannot kill slot ");
+                kprint(arg);
+                kprint(" (invalid, kernel, idle, or already dead)");
+            }
         }
     }
     else if (safe_compare(cmd, "lspci")) {

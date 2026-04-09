@@ -1,5 +1,6 @@
 #include "idt.h"
 #include "io.h"
+#include "scheduler.h"
 #include <stddef.h>
 
 extern void console_print(const char* str);
@@ -37,9 +38,13 @@ extern "C" void* isr_stub_table[];
 // Load IDT register
 extern "C" void load_idt(void* ptr);
 
+// INT 0x80 yield stub (defined in interrupts.asm)
+extern "C" void sched_yield_stub();
+
 // C-callable dispatchers (called from assembly common handlers)
 extern "C" void isr_dispatch(InterruptFrame* frame);
-extern "C" void irq_dispatch(InterruptFrame* frame);
+extern "C" uint64_t irq_dispatch(InterruptFrame* frame);
+extern "C" uint64_t sched_yield_dispatch(InterruptFrame* frame);
 
 // ============================================================
 // IRQ handler table + statistics
@@ -261,7 +266,7 @@ extern "C" void isr_dispatch(InterruptFrame* frame) {
     asm volatile("cli; hlt");
 }
 
-extern "C" void irq_dispatch(InterruptFrame* frame) {
+extern "C" uint64_t irq_dispatch(InterruptFrame* frame) {
     uint8_t irq = (uint8_t)(frame->int_no - 32);
 
     if (irq < 16) {
@@ -274,7 +279,19 @@ extern "C" void irq_dispatch(InterruptFrame* frame) {
 
         // Send End-of-Interrupt to PIC
         pic_send_eoi(irq);
+
+        // Timer IRQ: let the scheduler potentially switch tasks.
+        // Returns the RSP to restore from (same or different task).
+        if (irq == 0) {
+            return Scheduler::timer_tick((uint64_t)frame);
+        }
     }
+
+    return (uint64_t)frame;
+}
+
+extern "C" uint64_t sched_yield_dispatch(InterruptFrame* frame) {
+    return Scheduler::yield((uint64_t)frame);
 }
 
 // ============================================================
@@ -307,7 +324,10 @@ void idt_init() {
         set_idt_entry(32 + i, isr_stub_table[32 + i], 0x8E);
     }
 
-    // 4. Load IDT
+    // 4. Install scheduler yield interrupt (INT 0x80)
+    set_idt_entry(0x80, (void*)sched_yield_stub, 0x8E);
+
+    // 5. Load IDT
     idt_ptr.limit = sizeof(idt) - 1;
     idt_ptr.base = (uint64_t)&idt;
     load_idt(&idt_ptr);

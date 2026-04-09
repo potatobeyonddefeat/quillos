@@ -18,11 +18,13 @@
 ; ============================================================
 
 extern isr_dispatch         ; C handler for CPU exceptions
-extern irq_dispatch         ; C handler for hardware IRQs
+extern irq_dispatch         ; C handler for hardware IRQs (returns new RSP)
+extern sched_yield_dispatch ; C handler for INT 0x80 yield (returns new RSP)
 
 global load_idt
 global context_switch
 global isr_stub_table
+global sched_yield_stub
 
 section .text
 
@@ -188,7 +190,60 @@ irq_common:
 
     cld
     mov rdi, rsp                ; First argument = pointer to InterruptFrame
-    call irq_dispatch
+    call irq_dispatch           ; Returns uint64_t: RSP to restore from
+    mov rsp, rax                ; Switch stacks (no-op if same task)
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+
+    add rsp, 16                 ; Remove int_no and error_code
+    iretq
+
+; ============================================================
+; INT 0x80 — Scheduler yield (software interrupt)
+;
+; Used by Scheduler::sleep_ms() and explicit yield.
+; Same register save/restore as irq_common, but calls
+; sched_yield_dispatch instead. No PIC EOI needed.
+; ============================================================
+
+sched_yield_stub:
+    push qword 0                ; Dummy error code
+    push qword 0x80             ; Interrupt number
+
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    cld
+    mov rdi, rsp                ; InterruptFrame*
+    call sched_yield_dispatch   ; Returns new RSP in rax
+    mov rsp, rax                ; Switch stacks
 
     pop r15
     pop r14
