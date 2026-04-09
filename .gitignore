@@ -1,0 +1,7 @@
+# Build artifacts
+quillos/build/*.o
+quillos/iso/kernel.elf
+quillos/quillos.iso
+
+# Limine built binary
+quillos/limine/limine
