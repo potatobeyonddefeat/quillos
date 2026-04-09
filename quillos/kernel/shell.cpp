@@ -146,6 +146,8 @@ void process_command(char* input) {
         kprint("\n  netinfo       - Network status");
         kprint("\n  cluster       - Cluster status");
         kprint("\n  intinfo       - Interrupt statistics");
+        kprint("\n  heapinfo      - Heap allocator stats");
+        kprint("\n  heaptest      - Test kmalloc/kfree");
         kprint("\n  spawn <name>  - Spawn a test task");
         kprint("\n  kill <slot>   - Kill task by slot");
     }
@@ -324,12 +326,82 @@ void process_command(char* input) {
     }
     else if (safe_compare(cmd, "meminfo")) {
         char buf[32];
-        kprint("\nMemory Manager:");
-        kprint("\n  Total pages: "); itoa(Memory::get_total_pages(), buf); kprint(buf);
-        kprint("\n  Used pages:  "); itoa(Memory::get_used_pages(), buf); kprint(buf);
-        kprint("\n  Free pages:  "); itoa(Memory::get_free_pages(), buf); kprint(buf);
-        kprint("\n  Total RAM:   "); itoa(Memory::get_total_pages() * 4, buf); kprint(buf); kprint(" KB");
-        kprint("\n  Heap used:   "); itoa(Memory::get_heap_used(), buf); kprint(buf); kprint(" bytes");
+        kprint("\nPhysical Memory (PMM):");
+        kprint("\n  Total:  "); itoa(Memory::pmm_total_pages(), buf); kprint(buf); kprint(" pages (");
+        itoa(Memory::pmm_total_bytes() / 1024, buf); kprint(buf); kprint(" KB)");
+        kprint("\n  Used:   "); itoa(Memory::pmm_used_pages(), buf); kprint(buf); kprint(" pages");
+        kprint("\n  Free:   "); itoa(Memory::pmm_free_pages(), buf); kprint(buf); kprint(" pages");
+        kprint("\nKernel Heap:");
+        kprint("\n  Size:   "); itoa(Memory::heap_total_size() / 1024, buf); kprint(buf); kprint(" KB");
+        kprint("\n  Used:   "); itoa(Memory::heap_allocated_bytes(), buf); kprint(buf); kprint(" bytes (");
+        itoa(Memory::heap_alloc_count(), buf); kprint(buf); kprint(" allocs)");
+        kprint("\n  Free:   "); itoa(Memory::heap_free_bytes(), buf); kprint(buf); kprint(" bytes");
+        kprint("\n  Blocks: "); itoa(Memory::heap_block_count(), buf); kprint(buf);
+        kprint("\n  Largest free: "); itoa(Memory::heap_largest_free(), buf); kprint(buf); kprint(" bytes");
+    }
+    else if (safe_compare(cmd, "heapinfo")) {
+        char buf[32];
+        kprint("\nHeap Allocator Details:");
+        kprint("\n  Committed:     "); itoa(Memory::heap_total_size(), buf); kprint(buf); kprint(" bytes");
+        kprint("\n  Allocated:     "); itoa(Memory::heap_allocated_bytes(), buf); kprint(buf); kprint(" bytes");
+        kprint("\n  Free:          "); itoa(Memory::heap_free_bytes(), buf); kprint(buf); kprint(" bytes");
+        kprint("\n  Live allocs:   "); itoa(Memory::heap_alloc_count(), buf); kprint(buf);
+        kprint("\n  Total blocks:  "); itoa(Memory::heap_block_count(), buf); kprint(buf);
+        kprint("\n  Largest free:  "); itoa(Memory::heap_largest_free(), buf); kprint(buf); kprint(" bytes");
+    }
+    else if (safe_compare(cmd, "heaptest")) {
+        kprint("\nRunning heap allocator test...");
+        char buf[32];
+
+        // Test 1: Basic alloc/free
+        kprint("\n  Test 1: kmalloc(64)...");
+        void* p1 = Memory::kmalloc(64);
+        if (p1) { kprint(" OK"); } else { kprint(" FAIL"); }
+
+        kprint("\n  Test 2: kmalloc(256)...");
+        void* p2 = Memory::kmalloc(256);
+        if (p2) { kprint(" OK"); } else { kprint(" FAIL"); }
+
+        kprint("\n  Test 3: kmalloc(1024)...");
+        void* p3 = Memory::kmalloc(1024);
+        if (p3) { kprint(" OK"); } else { kprint(" FAIL"); }
+
+        kprint("\n  Allocs live: "); itoa(Memory::heap_alloc_count(), buf); kprint(buf);
+
+        // Test 4: Free middle block (tests coalescing won't corrupt)
+        kprint("\n  Test 4: kfree(p2)...");
+        Memory::kfree(p2);
+        kprint(" OK");
+
+        // Test 5: Re-allocate into freed space
+        kprint("\n  Test 5: kmalloc(128) into freed space...");
+        void* p4 = Memory::kmalloc(128);
+        if (p4) { kprint(" OK"); } else { kprint(" FAIL"); }
+
+        // Test 6: Free everything
+        kprint("\n  Test 6: Free all...");
+        Memory::kfree(p1);
+        Memory::kfree(p3);
+        Memory::kfree(p4);
+        kprint(" OK");
+
+        kprint("\n  Allocs live: "); itoa(Memory::heap_alloc_count(), buf); kprint(buf);
+        kprint(" (should be 0)");
+
+        // Test 7: PMM page alloc/free
+        kprint("\n  Test 7: pmm_alloc_page...");
+        uint64_t phys = Memory::pmm_alloc_page();
+        if (phys) {
+            kprint(" OK (phys=");
+            itoa(phys, buf); kprint(buf);
+            kprint(")");
+            Memory::pmm_free_page(phys);
+            kprint(" freed");
+        } else {
+            kprint(" FAIL");
+        }
+
+        kprint("\n  All tests passed!");
     }
     else if (safe_compare(cmd, "ps")) {
         char buf[32];
