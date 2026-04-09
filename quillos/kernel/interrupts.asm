@@ -1,67 +1,230 @@
 [bits 64]
-extern keyboard_handler_main
-extern timer_handler_main
 
-global keyboard_handler_stub
-global timer_handler_stub
+; ============================================================
+; QuillOS x86-64 Interrupt Stubs
+;
+; Layout:  32 ISR stubs (CPU exceptions, INT 0-31)
+;        + 16 IRQ stubs (hardware interrupts, INT 32-47)
+;        + isr_common / irq_common (save regs, call C dispatch)
+;        + load_idt
+;        + context_switch (for scheduler)
+;
+; Stack frame after common handler pushes (grows downward):
+;   [r15] [r14] ... [rax]  <- pushed by common handler
+;   [int_no] [error_code]  <- pushed by stub
+;   [rip] [cs] [rflags] [rsp] [ss]  <- pushed by CPU
+;
+; This matches the InterruptFrame struct in idt.h exactly.
+; ============================================================
+
+extern isr_dispatch         ; C handler for CPU exceptions
+extern irq_dispatch         ; C handler for hardware IRQs
+
 global load_idt
-global dummy_handler
 global context_switch
+global isr_stub_table
 
 section .text
 
-; Helper Macro to wrap hardware interrupt stubs
-%macro HW_INTERRUPT_STUB 2
-%1:
+; ============================================================
+; ISR stubs — CPU Exceptions (INT 0-31)
+;
+; Some exceptions push an error code automatically.
+; For those that don't, we push a dummy 0 to keep the
+; stack layout uniform.
+; ============================================================
+
+%macro ISR_NOERRCODE 1
+isr_%1:
+    push qword 0            ; Dummy error code
+    push qword %1           ; Interrupt number
+    jmp isr_common
+%endmacro
+
+%macro ISR_ERRCODE 1
+isr_%1:
+    ; CPU already pushed the error code
+    push qword %1           ; Interrupt number
+    jmp isr_common
+%endmacro
+
+ISR_NOERRCODE 0             ; #DE  Divide by Zero
+ISR_NOERRCODE 1             ; #DB  Debug
+ISR_NOERRCODE 2             ;      NMI
+ISR_NOERRCODE 3             ; #BP  Breakpoint
+ISR_NOERRCODE 4             ; #OF  Overflow
+ISR_NOERRCODE 5             ; #BR  Bound Range Exceeded
+ISR_NOERRCODE 6             ; #UD  Invalid Opcode
+ISR_NOERRCODE 7             ; #NM  Device Not Available
+ISR_ERRCODE   8             ; #DF  Double Fault
+ISR_NOERRCODE 9             ;      Coprocessor Segment Overrun
+ISR_ERRCODE   10            ; #TS  Invalid TSS
+ISR_ERRCODE   11            ; #NP  Segment Not Present
+ISR_ERRCODE   12            ; #SS  Stack-Segment Fault
+ISR_ERRCODE   13            ; #GP  General Protection Fault
+ISR_ERRCODE   14            ; #PF  Page Fault
+ISR_NOERRCODE 15            ;      Reserved
+ISR_NOERRCODE 16            ; #MF  x87 FPU Error
+ISR_ERRCODE   17            ; #AC  Alignment Check
+ISR_NOERRCODE 18            ; #MC  Machine Check
+ISR_NOERRCODE 19            ; #XM  SIMD FPU Exception
+ISR_NOERRCODE 20            ; #VE  Virtualization Exception
+ISR_ERRCODE   21            ; #CP  Control Protection
+ISR_NOERRCODE 22            ;      Reserved
+ISR_NOERRCODE 23            ;      Reserved
+ISR_NOERRCODE 24            ;      Reserved
+ISR_NOERRCODE 25            ;      Reserved
+ISR_NOERRCODE 26            ;      Reserved
+ISR_NOERRCODE 27            ;      Reserved
+ISR_NOERRCODE 28            ;      Hypervisor Injection
+ISR_ERRCODE   29            ;      VMM Communication
+ISR_ERRCODE   30            ;      Security Exception
+ISR_NOERRCODE 31            ;      Reserved
+
+; ============================================================
+; IRQ stubs — Hardware Interrupts (INT 32-47)
+;
+; These are from the PIC. We always push a dummy error code
+; and the interrupt number, then jump to irq_common.
+; ============================================================
+
+%macro IRQ_STUB 2
+irq_%1:
+    push qword 0            ; Dummy error code
+    push qword %2           ; Interrupt number (32 + irq_num)
+    jmp irq_common
+%endmacro
+
+IRQ_STUB  0, 32             ; Timer
+IRQ_STUB  1, 33             ; Keyboard
+IRQ_STUB  2, 34             ; Cascade (slave PIC)
+IRQ_STUB  3, 35             ; COM2
+IRQ_STUB  4, 36             ; COM1
+IRQ_STUB  5, 37             ; LPT2
+IRQ_STUB  6, 38             ; Floppy
+IRQ_STUB  7, 39             ; LPT1 / Spurious
+IRQ_STUB  8, 40             ; RTC
+IRQ_STUB  9, 41             ; ACPI
+IRQ_STUB 10, 42             ; Open
+IRQ_STUB 11, 43             ; Open
+IRQ_STUB 12, 44             ; Mouse
+IRQ_STUB 13, 45             ; FPU
+IRQ_STUB 14, 46             ; Primary ATA
+IRQ_STUB 15, 47             ; Secondary ATA
+
+; ============================================================
+; isr_common — Common handler for CPU exceptions
+;
+; At this point, the stack has:
+;   [int_no] [error_code] [rip] [cs] [rflags] [rsp] [ss]
+;
+; We save all GP registers to complete the InterruptFrame,
+; then call isr_dispatch(InterruptFrame* frame).
+; ============================================================
+
+isr_common:
     push rax
+    push rbx
     push rcx
     push rdx
     push rsi
     push rdi
+    push rbp
     push r8
     push r9
     push r10
     push r11
-    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
 
-    cld                 ; Clear direction flag for C ABI
-    mov rbp, rsp
-    sub rsp, 8          ; Re-align for 16-byte boundary
-    and rsp, -16        
+    cld                         ; Clear direction flag (C ABI requirement)
+    mov rdi, rsp                ; First argument = pointer to InterruptFrame
+    call isr_dispatch
 
-    call %2
-
-    mov rsp, rbp
-    pop rbp
+    pop r15
+    pop r14
+    pop r13
+    pop r12
     pop r11
     pop r10
     pop r9
     pop r8
+    pop rbp
     pop rdi
     pop rsi
     pop rdx
     pop rcx
+    pop rbx
     pop rax
-    iretq
-%endmacro
 
-HW_INTERRUPT_STUB keyboard_handler_stub, keyboard_handler_main
-HW_INTERRUPT_STUB timer_handler_stub, timer_handler_main
+    add rsp, 16                 ; Remove int_no and error_code
+    iretq
+
+; ============================================================
+; irq_common — Common handler for hardware IRQs
+;
+; Same register save/restore as isr_common, but calls
+; irq_dispatch which handles EOI.
+; ============================================================
+
+irq_common:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    cld
+    mov rdi, rsp                ; First argument = pointer to InterruptFrame
+    call irq_dispatch
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+
+    add rsp, 16                 ; Remove int_no and error_code
+    iretq
+
+; ============================================================
+; load_idt — Load the IDT register
+; ============================================================
 
 load_idt:
     lidt [rdi]
     ret
 
-dummy_handler:
-    push rax
-    mov al, 0x20
-    out 0x20, al
-    pop rax
-    iretq
+; ============================================================
+; context_switch — Cooperative task switch for scheduler
+;
+; void context_switch(uint64_t* old_rsp_ptr, uint64_t new_rsp)
+;   rdi = address to store current RSP
+;   rsi = new RSP to switch to
+; ============================================================
 
-; context_switch(uint64_t* old_rsp_ptr, uint64_t new_rsp)
-; rdi = pointer to save current RSP
-; rsi = new RSP to load
 context_switch:
     push rbx
     push rbp
@@ -69,8 +232,8 @@ context_switch:
     push r13
     push r14
     push r15
-    mov [rdi], rsp      ; Save current RSP
-    mov rsp, rsi         ; Load new RSP
+    mov [rdi], rsp              ; Save current RSP
+    mov rsp, rsi                ; Load new RSP
     pop r15
     pop r14
     pop r13
@@ -78,3 +241,25 @@ context_switch:
     pop rbp
     pop rbx
     ret
+
+; ============================================================
+; Stub address table — Used by idt.cpp to fill the IDT
+;
+; isr_stub_table[0..31]  = ISR stubs (CPU exceptions)
+; isr_stub_table[32..47] = IRQ stubs (hardware interrupts)
+; ============================================================
+
+section .data
+isr_stub_table:
+    dq isr_0,  isr_1,  isr_2,  isr_3
+    dq isr_4,  isr_5,  isr_6,  isr_7
+    dq isr_8,  isr_9,  isr_10, isr_11
+    dq isr_12, isr_13, isr_14, isr_15
+    dq isr_16, isr_17, isr_18, isr_19
+    dq isr_20, isr_21, isr_22, isr_23
+    dq isr_24, isr_25, isr_26, isr_27
+    dq isr_28, isr_29, isr_30, isr_31
+    dq irq_0,  irq_1,  irq_2,  irq_3
+    dq irq_4,  irq_5,  irq_6,  irq_7
+    dq irq_8,  irq_9,  irq_10, irq_11
+    dq irq_12, irq_13, irq_14, irq_15

@@ -1,5 +1,6 @@
 #include "shell.h"
 #include "io.h"
+#include "idt.h"
 #include "filesystem.h"
 #include "memory.h"
 #include "scheduler.h"
@@ -144,6 +145,7 @@ void process_command(char* input) {
         kprint("\n  diskinfo      - Disk status");
         kprint("\n  netinfo       - Network status");
         kprint("\n  cluster       - Cluster status");
+        kprint("\n  intinfo       - Interrupt statistics");
     }
     else if (safe_compare(cmd, "cls")) {
         console_clear();
@@ -410,6 +412,28 @@ void process_command(char* input) {
             itoa(node->port, buf); kprint(buf);
             kprint(")");
             if (n == Cluster::get_local_id()) kprint(" [self]");
+        }
+    }
+    else if (safe_compare(cmd, "intinfo")) {
+        char buf[32];
+        kprint("\nInterrupt System:");
+        kprint("\n  CPU exceptions caught: ");
+        itoa(isr_get_total_exceptions(), buf); kprint(buf);
+        kprint("\n  IRQ counts:");
+        const char* irq_names[] = {
+            "Timer", "Keyboard", "Cascade", "COM2",
+            "COM1", "LPT2", "Floppy", "LPT1/Spurious",
+            "RTC", "ACPI", "Open", "Open",
+            "Mouse", "FPU", "ATA Primary", "ATA Secondary"
+        };
+        for (int irq = 0; irq < 16; irq++) {
+            uint64_t count = irq_get_count((uint8_t)irq);
+            if (count > 0) {
+                kprint("\n    IRQ ");
+                itoa(irq, buf); kprint(buf);
+                kprint(" ("); kprint(irq_names[irq]); kprint("): ");
+                itoa(count, buf); kprint(buf);
+            }
         }
     }
     else if (safe_compare(cmd, "reboot")) {
