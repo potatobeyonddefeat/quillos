@@ -1,6 +1,12 @@
 #include "shell.h"
 #include "io.h"
 #include "filesystem.h"
+#include "memory.h"
+#include "scheduler.h"
+#include "pci.h"
+#include "disk.h"
+#include "network.h"
+#include "cluster.h"
 
 extern void console_print(const char* str);
 extern void console_clear();
@@ -9,6 +15,16 @@ extern void console_putc(char c);
 extern void set_bg_color(uint32_t color);
 extern void itoa(uint64_t n, char* str);
 extern volatile uint64_t ticks;
+
+// Hex helper for PCI output
+static void itoa_hex(uint32_t n, char* str) {
+    const char* hex = "0123456789ABCDEF";
+    str[0] = '0'; str[1] = 'x';
+    for (int i = 3; i >= 0; i--) {
+        str[2 + (3 - i)] = hex[(n >> (i * 4)) & 0xF];
+    }
+    str[6] = '\0';
+}
 
 // Global filesystem instance
 QuillFS::Filesystem g_fs;
@@ -122,6 +138,12 @@ void process_command(char* input) {
         kprint("\n  rm <name>     - Remove file/dir");
         kprint("\n  pwd           - Print working dir");
         kprint("\n  cd <path>     - Change directory");
+        kprint("\n  meminfo       - Memory statistics");
+        kprint("\n  ps            - List tasks");
+        kprint("\n  lspci         - List PCI devices");
+        kprint("\n  diskinfo      - Disk status");
+        kprint("\n  netinfo       - Network status");
+        kprint("\n  cluster       - Cluster status");
     }
     else if (safe_compare(cmd, "cls")) {
         console_clear();
@@ -294,6 +316,100 @@ void process_command(char* input) {
                 kprint("\nFailed to remove: ");
                 kprint(arg);
             }
+        }
+    }
+    else if (safe_compare(cmd, "meminfo")) {
+        char buf[32];
+        kprint("\nMemory Manager:");
+        kprint("\n  Total pages: "); itoa(Memory::get_total_pages(), buf); kprint(buf);
+        kprint("\n  Used pages:  "); itoa(Memory::get_used_pages(), buf); kprint(buf);
+        kprint("\n  Free pages:  "); itoa(Memory::get_free_pages(), buf); kprint(buf);
+        kprint("\n  Total RAM:   "); itoa(Memory::get_total_pages() * 4, buf); kprint(buf); kprint(" KB");
+        kprint("\n  Heap used:   "); itoa(Memory::get_heap_used(), buf); kprint(buf); kprint(" bytes");
+    }
+    else if (safe_compare(cmd, "ps")) {
+        char buf[32];
+        kprint("\nTasks ("); itoa(Scheduler::get_count(), buf); kprint(buf); kprint(" active):");
+        kprint("\n  ID  STATE    NAME");
+        for (uint32_t t = 0; t < Scheduler::MAX_TASKS; t++) {
+            const Scheduler::Task* task = Scheduler::get_task(t);
+            if (!task || task->state == Scheduler::TASK_UNUSED) continue;
+            kprint("\n  ");
+            itoa(task->id, buf); kprint(buf);
+            if (task->state == Scheduler::TASK_RUNNING) kprint("   running  ");
+            else if (task->state == Scheduler::TASK_READY) kprint("   ready    ");
+            else if (task->state == Scheduler::TASK_BLOCKED) kprint("   blocked  ");
+            kprint(task->name);
+        }
+    }
+    else if (safe_compare(cmd, "lspci")) {
+        char buf[32];
+        uint32_t count = PCI::get_count();
+        kprint("\nPCI Devices ("); itoa(count, buf); kprint(buf); kprint("):");
+        kprint("\n  BUS:DEV  VENDOR  DEVICE  CLASS");
+        for (uint32_t p = 0; p < count; p++) {
+            const PCI::Device* dev = PCI::get_device(p);
+            if (!dev) continue;
+            kprint("\n  ");
+            itoa(dev->bus, buf); kprint(buf); kprint(":");
+            itoa(dev->device, buf); kprint(buf);
+            kprint("    ");
+            itoa_hex(dev->vendor_id, buf); kprint(buf);
+            kprint("  ");
+            itoa_hex(dev->device_id, buf); kprint(buf);
+            kprint("  ");
+            itoa_hex(dev->class_code, buf); kprint(buf);
+            kprint(":");
+            itoa_hex(dev->subclass, buf); kprint(buf);
+        }
+    }
+    else if (safe_compare(cmd, "diskinfo")) {
+        if (Disk::is_present()) {
+            kprint("\nDisk: ATA drive detected on primary bus");
+            kprint("\n  Mode: PIO (Programmed I/O)");
+            kprint("\n  Sector size: 512 bytes");
+        } else {
+            kprint("\nDisk: No ATA drive detected");
+        }
+    }
+    else if (safe_compare(cmd, "netinfo")) {
+        if (Network::is_present()) {
+            char buf[32];
+            kprint("\nNetwork: NIC present");
+            uint32_t ip = Network::get_ip();
+            kprint("\n  IP: ");
+            itoa((ip >> 24) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa((ip >> 16) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa((ip >> 8) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa(ip & 0xFF, buf); kprint(buf);
+            const Network::MACAddress* mac = Network::get_mac();
+            kprint("\n  MAC: ");
+            for (int m = 0; m < 6; m++) {
+                itoa(mac->bytes[m], buf); kprint(buf);
+                if (m < 5) kprint(":");
+            }
+        } else {
+            kprint("\nNetwork: No NIC detected");
+        }
+    }
+    else if (safe_compare(cmd, "cluster")) {
+        char buf[32];
+        kprint("\nCluster ("); itoa(Cluster::get_count(), buf); kprint(buf); kprint(" nodes):");
+        for (uint32_t n = 0; n < Cluster::MAX_NODES; n++) {
+            const Cluster::Node* node = Cluster::get_node(n);
+            if (!node) continue;
+            kprint("\n  Node "); itoa(node->id, buf); kprint(buf);
+            kprint(": "); kprint(node->name);
+            kprint(" (");
+            uint32_t ip = node->ip_address;
+            itoa((ip >> 24) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa((ip >> 16) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa((ip >> 8) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa(ip & 0xFF, buf); kprint(buf);
+            kprint(":");
+            itoa(node->port, buf); kprint(buf);
+            kprint(")");
+            if (n == Cluster::get_local_id()) kprint(" [self]");
         }
     }
     else if (safe_compare(cmd, "reboot")) {

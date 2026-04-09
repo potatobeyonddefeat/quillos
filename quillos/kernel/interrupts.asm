@@ -6,6 +6,7 @@ global keyboard_handler_stub
 global timer_handler_stub
 global load_idt
 global dummy_handler
+global context_switch
 
 section .text
 
@@ -57,3 +58,23 @@ dummy_handler:
     out 0x20, al
     pop rax
     iretq
+
+; context_switch(uint64_t* old_rsp_ptr, uint64_t new_rsp)
+; rdi = pointer to save current RSP
+; rsi = new RSP to load
+context_switch:
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [rdi], rsp      ; Save current RSP
+    mov rsp, rsi         ; Load new RSP
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    ret

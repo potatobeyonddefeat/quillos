@@ -24,7 +24,13 @@ KERNEL_OBJS = \
     build/shell.o \
     build/timer.o \
     build/utils.o \
-    build/filesystem.o
+    build/filesystem.o \
+    build/memory.o \
+    build/scheduler.o \
+    build/pci.o \
+    build/disk.o \
+    build/network.o \
+    build/cluster.o
 
 all: iso/kernel.elf
 
