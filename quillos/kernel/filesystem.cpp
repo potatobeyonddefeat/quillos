@@ -1,91 +1,301 @@
 #include "filesystem.h"
-#include <stdint.h>
-#include <stddef.h>
-#include <limine.h>
 
 namespace QuillFS {
-    volatile struct limine_memmap_request memmap_request = {
-        .id = LIMINE_MEMMAP_REQUEST,
-        .revision = 0,
-        .response = nullptr
-    };
 
-    volatile struct limine_module_request module_request = {
-        .id = LIMINE_MODULE_REQUEST,
-        .revision = 0,
-        .response = nullptr
-    };
+    // Simple string helpers (no stdlib available)
+    static int fs_strlen(const char* s) {
+        int len = 0;
+        while (s[len]) len++;
+        return len;
+    }
+
+    static void fs_strcpy(char* dst, const char* src) {
+        int i = 0;
+        while (src[i]) { dst[i] = src[i]; i++; }
+        dst[i] = '\0';
+    }
+
+    static bool fs_strcmp(const char* a, const char* b) {
+        int i = 0;
+        while (a[i] && b[i]) {
+            if (a[i] != b[i]) return false;
+            i++;
+        }
+        return a[i] == b[i];
+    }
+
+    static void fs_strcat(char* dst, const char* src) {
+        int len = fs_strlen(dst);
+        int i = 0;
+        while (src[i]) { dst[len + i] = src[i]; i++; }
+        dst[len + i] = '\0';
+    }
+
+    static void fs_memset(void* dst, uint8_t val, size_t n) {
+        uint8_t* p = (uint8_t*)dst;
+        for (size_t i = 0; i < n; i++) p[i] = val;
+    }
 
     bool Filesystem::init() {
-        // 1. Check if Limine loaded our RAM disk (module)
-        if (!module_request.response || module_request.response->module_count == 0) {
-            return false;
+        // Zero out all entries
+        for (uint32_t i = 0; i < MAX_FILES; i++) {
+            fs_memset(&entries[i], 0, sizeof(FileEntry));
+            entries[i].type = FILE_UNUSED;
         }
 
-        this->disk_base_address = reinterpret_cast<uintptr_t>(module_request.response->modules[0]->address);
-
-        Superblock* sblck = reinterpret_cast<Superblock*>(this->disk_base_address);
-
-        if (sblck->magic != QUILL_MAGIC) {
-            return false; 
-        }
-
-        this->total_blocks = sblck->total_blocks;
-
-        this->block_bitmap.buffer = reinterpret_cast<uint64_t*>(disk_base_address + sizeof(Superblock));
-
-        this->block_bitmap.size = (this->total_blocks + 63) / 64; 
+        // Create root directory
+        entries[0].type = FILE_DIRECTORY;
+        fs_strcpy(entries[0].name, "/");
+        entries[0].parent[0] = '\0';
+        entries[0].size = 0;
 
         return true;
-    };
+    }
 
-    void* Filesystem::quick_allocate(size_t requested_size) {
-        QuillFS::Superblock* disk_header = reinterpret_cast<QuillFS::Superblock*>(disk_base_address);
-        size_t blocks_needed = (requested_size + (BLOCK_SIZE - 1)) / BLOCK_SIZE;
+    int Filesystem::find_entry(const char* parent, const char* name) {
+        for (uint32_t i = 0; i < MAX_FILES; i++) {
+            if (entries[i].type != FILE_UNUSED &&
+                fs_strcmp(entries[i].name, name) &&
+                fs_strcmp(entries[i].parent, parent)) {
+                return (int)i;
+            }
+        }
+        return -1;
+    }
 
-        // Calculate how many blocks the Superblock + Bitmap occupy
-        size_t bitmap_bytes = (this->total_blocks + 7) / 8;
-        size_t metadata_bytes = sizeof(Superblock) + bitmap_bytes;
-        size_t first_usable_block = (metadata_bytes + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        this->total_blocks = disk_header->total_blocks;
+    int Filesystem::find_free_slot() {
+        for (uint32_t i = 0; i < MAX_FILES; i++) {
+            if (entries[i].type == FILE_UNUSED) return (int)i;
+        }
+        return -1;
+    }
 
-        for(size_t i = 0; i < block_bitmap.size; i++) {
-            // If the 64-bit chunk is NOT all 1s, there is at least one free block here
-            if (block_bitmap.buffer[i] != 0xFFFFFFFFFFFFFFFF) {
-                
-                // Use a built-in CPU instruction to find the first '0' bit
-                // __builtin_ctzl finds "Count Trailing Zeros" (the first 0 from the right)
-                // We invert the number (~) so the first 0 becomes the first 1
-                uint64_t first_free_bit = __builtin_ctzl(~block_bitmap.buffer[i]);
-        
-                uint64_t absolute_index = (i * 64) + first_free_bit;
-                
-                if(absolute_index < first_usable_block) {
-                    continue; // Skip blocks reserved for metadata
+    // Split "/foo/bar" into parent="/" name="bar"
+    // Split "/foo/bar/baz" into parent="/foo/bar" name="baz"
+    // Split "/foo" into parent="/" name="foo"
+    void Filesystem::split_path(const char* path, char* parent_out, char* name_out) {
+        int len = fs_strlen(path);
+
+        // Find last '/'
+        int last_slash = -1;
+        for (int i = len - 1; i >= 0; i--) {
+            if (path[i] == '/') { last_slash = i; break; }
+        }
+
+        if (last_slash <= 0) {
+            // Parent is root
+            fs_strcpy(parent_out, "/");
+        } else {
+            for (int i = 0; i < last_slash; i++) parent_out[i] = path[i];
+            parent_out[last_slash] = '\0';
+        }
+
+        // Name is everything after last slash
+        int ni = 0;
+        for (int i = last_slash + 1; i < len; i++) {
+            name_out[ni++] = path[i];
+        }
+        name_out[ni] = '\0';
+    }
+
+    bool Filesystem::path_exists(const char* parent, const char* name) {
+        return find_entry(parent, name) >= 0;
+    }
+
+    bool Filesystem::mkdir(const char* path) {
+        if (!path || path[0] != '/') return false;
+        if (fs_strcmp(path, "/")) return false; // Root already exists
+
+        char parent[MAX_PATH_LEN] = {0};
+        char name[MAX_NAME_LEN] = {0};
+        split_path(path, parent, name);
+
+        if (fs_strlen(name) == 0) return false;
+
+        // Check parent exists and is a directory
+        // Parent "/" is always valid (entry 0)
+        if (!fs_strcmp(parent, "/")) {
+            // For nested paths, verify parent dir exists
+            char pp[MAX_PATH_LEN] = {0};
+            char pn[MAX_NAME_LEN] = {0};
+            split_path(parent, pp, pn);
+            int pi = find_entry(pp, pn);
+            if (pi < 0 || entries[pi].type != FILE_DIRECTORY) return false;
+        }
+
+        // Check if already exists
+        if (path_exists(parent, name)) return false;
+
+        int slot = find_free_slot();
+        if (slot < 0) return false;
+
+        entries[slot].type = FILE_DIRECTORY;
+        fs_strcpy(entries[slot].name, name);
+        fs_strcpy(entries[slot].parent, parent);
+        entries[slot].size = 0;
+
+        return true;
+    }
+
+    bool Filesystem::touch(const char* path) {
+        if (!path || path[0] != '/') return false;
+
+        char parent[MAX_PATH_LEN] = {0};
+        char name[MAX_NAME_LEN] = {0};
+        split_path(path, parent, name);
+
+        if (fs_strlen(name) == 0) return false;
+
+        // Check parent exists
+        if (!fs_strcmp(parent, "/")) {
+            char pp[MAX_PATH_LEN] = {0};
+            char pn[MAX_NAME_LEN] = {0};
+            split_path(parent, pp, pn);
+            int pi = find_entry(pp, pn);
+            if (pi < 0 || entries[pi].type != FILE_DIRECTORY) return false;
+        }
+
+        // If already exists, just return true
+        if (path_exists(parent, name)) return true;
+
+        int slot = find_free_slot();
+        if (slot < 0) return false;
+
+        entries[slot].type = FILE_REGULAR;
+        fs_strcpy(entries[slot].name, name);
+        fs_strcpy(entries[slot].parent, parent);
+        entries[slot].size = 0;
+        fs_memset(entries[slot].data, 0, MAX_FILE_DATA);
+
+        return true;
+    }
+
+    bool Filesystem::write_file(const char* path, const char* content) {
+        if (!path || path[0] != '/' || !content) return false;
+
+        char parent[MAX_PATH_LEN] = {0};
+        char name[MAX_NAME_LEN] = {0};
+        split_path(path, parent, name);
+
+        int idx = find_entry(parent, name);
+        if (idx < 0) {
+            // Auto-create the file
+            if (!touch(path)) return false;
+            idx = find_entry(parent, name);
+            if (idx < 0) return false;
+        }
+
+        if (entries[idx].type != FILE_REGULAR) return false;
+
+        uint32_t len = (uint32_t)fs_strlen(content);
+        if (len >= MAX_FILE_DATA) len = MAX_FILE_DATA - 1;
+
+        fs_memset(entries[idx].data, 0, MAX_FILE_DATA);
+        for (uint32_t i = 0; i < len; i++) {
+            entries[idx].data[i] = (uint8_t)content[i];
+        }
+        entries[idx].size = len;
+
+        return true;
+    }
+
+    bool Filesystem::read_file(const char* path, char* output_buf, uint32_t buf_size) {
+        if (!path || path[0] != '/' || !output_buf) return false;
+
+        char parent[MAX_PATH_LEN] = {0};
+        char name[MAX_NAME_LEN] = {0};
+        split_path(path, parent, name);
+
+        int idx = find_entry(parent, name);
+        if (idx < 0 || entries[idx].type != FILE_REGULAR) return false;
+
+        uint32_t copy_len = entries[idx].size;
+        if (copy_len >= buf_size) copy_len = buf_size - 1;
+
+        for (uint32_t i = 0; i < copy_len; i++) {
+            output_buf[i] = (char)entries[idx].data[i];
+        }
+        output_buf[copy_len] = '\0';
+
+        return true;
+    }
+
+    int Filesystem::ls(const char* path, char* output_buf, uint32_t buf_size) {
+        if (!path || !output_buf) return -1;
+
+        output_buf[0] = '\0';
+        int count = 0;
+        uint32_t pos = 0;
+
+        for (uint32_t i = 0; i < MAX_FILES; i++) {
+            if (entries[i].type == FILE_UNUSED) continue;
+
+            bool match = false;
+            if (fs_strcmp(path, "/")) {
+                match = fs_strcmp(entries[i].parent, "/");
+            } else {
+                match = fs_strcmp(entries[i].parent, path);
+            }
+
+            if (match) {
+                // Add type indicator
+                if (entries[i].type == FILE_DIRECTORY) {
+                    if (pos < buf_size - 1) output_buf[pos++] = 'd';
+                    if (pos < buf_size - 1) output_buf[pos++] = ' ';
+                } else {
+                    if (pos < buf_size - 1) output_buf[pos++] = 'f';
+                    if (pos < buf_size - 1) output_buf[pos++] = ' ';
                 }
-                // Double check we haven't gone past the total_blocks limit
-                if (absolute_index < total_blocks) {
-                     mark_used(absolute_index, blocks_needed);
-                     return reinterpret_cast<void*>(this->disk_base_address + (absolute_index * BLOCK_SIZE));
+
+                // Add name
+                int nlen = fs_strlen(entries[i].name);
+                for (int j = 0; j < nlen && pos < buf_size - 1; j++) {
+                    output_buf[pos++] = entries[i].name[j];
+                }
+                if (pos < buf_size - 1) output_buf[pos++] = '\n';
+                count++;
+            }
+        }
+
+        output_buf[pos] = '\0';
+        return count;
+    }
+
+    bool Filesystem::rm(const char* path) {
+        if (!path || path[0] != '/' || fs_strcmp(path, "/")) return false;
+
+        char parent[MAX_PATH_LEN] = {0};
+        char name[MAX_NAME_LEN] = {0};
+        split_path(path, parent, name);
+
+        int idx = find_entry(parent, name);
+        if (idx < 0) return false;
+
+        // If it's a directory, check it's empty
+        if (entries[idx].type == FILE_DIRECTORY) {
+            // Build the full path of this directory to check children
+            char full_path[MAX_PATH_LEN] = {0};
+            if (fs_strcmp(parent, "/")) {
+                full_path[0] = '/';
+                fs_strcat(full_path, name);
+            } else {
+                fs_strcpy(full_path, parent);
+                fs_strcat(full_path, "/");
+                fs_strcat(full_path, name);
+            }
+
+            for (uint32_t i = 0; i < MAX_FILES; i++) {
+                if (entries[i].type != FILE_UNUSED && fs_strcmp(entries[i].parent, full_path)) {
+                    return false; // Directory not empty
                 }
             }
         }
-        return nullptr; // No suitable block found
-    };
-    bool Filesystem::is_block_free(uint64_t block_index) { 
-        // Using ! because [] returns true if bit is 1 (Used)
-        // So if bit is 0 (False), the block is free.
-        return !block_bitmap[block_index]; 
+
+        // Clear the entry
+        fs_memset(&entries[idx], 0, sizeof(FileEntry));
+        entries[idx].type = FILE_UNUSED;
+
+        return true;
     }
 
-    void Filesystem::mark_used(uint64_t block_index, size_t count) { 
-        for(size_t i = 0; i < count; i++) {
-            // Mark as true to indicate it is now occupied
-            block_bitmap.set(block_index + i, true);
-        }
-    }
-    void Filesystem::optimize() { 
-        // Optimization logic to reduce fragmentation would go here
-    };
-    
 }

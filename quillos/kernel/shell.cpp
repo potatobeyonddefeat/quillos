@@ -1,21 +1,25 @@
 #include "shell.h"
 #include "io.h"
+#include "filesystem.h"
 
 extern void console_print(const char* str);
 extern void console_clear();
 extern void console_backspace();
 extern void console_putc(char c);
 extern void set_bg_color(uint32_t color);
-extern void itoa(uint64_t n, char* str); // Declaration
+extern void itoa(uint64_t n, char* str);
 extern volatile uint64_t ticks;
 
-// Access the global tick counter from timer.cpp
-extern volatile uint64_t ticks; 
+// Global filesystem instance
+QuillFS::Filesystem g_fs;
 
 #define kprint console_print
 #define SHELL_BUFFER_SIZE 256
 char shell_buffer[SHELL_BUFFER_SIZE];
 int shell_ptr = 0;
+
+// Current working directory
+static char cwd[QuillFS::MAX_PATH_LEN] = "/";
 
 // Internal safe string length
 int safe_strlen(const char* s) {
@@ -34,21 +38,53 @@ bool safe_compare(const char* a, const char* b) {
     return a[i] == b[i];
 }
 
+static void safe_strcpy(char* dst, const char* src) {
+    int i = 0;
+    while (src[i]) { dst[i] = src[i]; i++; }
+    dst[i] = '\0';
+}
+
+static void safe_strcat(char* dst, const char* src) {
+    int len = safe_strlen(dst);
+    int i = 0;
+    while (src[i]) { dst[len + i] = src[i]; i++; }
+    dst[len + i] = '\0';
+}
+
+// Build full path from cwd + relative name
+static void build_path(const char* name, char* out) {
+    if (name[0] == '/') {
+        // Absolute path
+        safe_strcpy(out, name);
+    } else {
+        // Relative to cwd
+        safe_strcpy(out, cwd);
+        if (!safe_compare(cwd, "/")) {
+            safe_strcat(out, "/");
+        }
+        safe_strcat(out, name);
+    }
+}
+
 void shell_init() {
     shell_ptr = 0;
     for(int i = 0; i < SHELL_BUFFER_SIZE; i++) shell_buffer[i] = 0;
-    kprint("\nQuillOS v0.1\n> ");
+
+    // Initialize the filesystem
+    if (g_fs.init()) {
+        kprint("\nQuillOS v0.1 - Filesystem ready\n> ");
+    } else {
+        kprint("\nQuillOS v0.1 - Filesystem error\n> ");
+    }
 }
 
 void process_command(char* input) {
     char cmd[64];
-    char arg[64];
+    char arg[192];
 
     // Zero out local buffers
-    for(int x = 0; x < 64; x++) {
-        cmd[x] = 0;
-        arg[x] = 0;
-    }
+    for(int x = 0; x < 64; x++) cmd[x] = 0;
+    for(int x = 0; x < 192; x++) arg[x] = 0;
 
     int i = 0;
     while (input[i] == ' ' && input[i] != '\0') i++;
@@ -62,7 +98,7 @@ void process_command(char* input) {
     while (input[i] == ' ' && input[i] != '\0') i++;
 
     int a_idx = 0;
-    while (input[i] != '\0' && a_idx < 63) {
+    while (input[i] != '\0' && a_idx < 191) {
         arg[a_idx++] = input[i++];
     }
     arg[a_idx] = '\0';
@@ -70,18 +106,33 @@ void process_command(char* input) {
     if (safe_strlen(cmd) == 0) return;
 
     if (safe_compare(cmd, "help")) {
-        kprint("\nCommands: help, cls, ver, halt, reboot, color");
+        kprint("\nCommands:");
+        kprint("\n  help          - Show this help");
+        kprint("\n  cls           - Clear screen");
+        kprint("\n  ver           - Show version");
+        kprint("\n  uptime        - Show uptime");
+        kprint("\n  halt          - Halt system");
+        kprint("\n  reboot        - Reboot system");
+        kprint("\n  color <name>  - Change background");
+        kprint("\n  ls [path]     - List directory");
+        kprint("\n  mkdir <name>  - Create directory");
+        kprint("\n  touch <name>  - Create file");
+        kprint("\n  cat <name>    - Read file");
+        kprint("\n  write <name> <text> - Write to file");
+        kprint("\n  rm <name>     - Remove file/dir");
+        kprint("\n  pwd           - Print working dir");
+        kprint("\n  cd <path>     - Change directory");
     }
     else if (safe_compare(cmd, "cls")) {
         console_clear();
-        shell_init(); 
+        shell_init();
     }
     else if (safe_compare(cmd, "ver")) {
         kprint("\nQuillOS v0.1");
     }
     else if (safe_compare(cmd, "uptime")) {
         char time_buf[32];
-        itoa(ticks / 1000, time_buf); // Convert ms to seconds
+        itoa(ticks / 1000, time_buf);
         kprint("\nUptime: ");
         kprint(time_buf);
         kprint(" seconds.");
@@ -90,25 +141,172 @@ void process_command(char* input) {
         if (safe_compare(arg, "red")) set_bg_color(0xFF0000);
         else if (safe_compare(arg, "blue")) set_bg_color(0x0000FF);
         else if (safe_compare(arg, "green")) set_bg_color(0x00FF00);
-        else if (safe_compare(arg, "dark")) set_bg_color(0x111111); 
-        else kprint("\nTry: red, blue, green, or dark");
-        
+        else if (safe_compare(arg, "dark")) set_bg_color(0x111111);
+        else { kprint("\nTry: red, blue, green, or dark"); goto done; }
+
         console_clear();
         kprint("\nBackground updated.");
     }
+    else if (safe_compare(cmd, "pwd")) {
+        kprint("\n");
+        kprint(cwd);
+    }
+    else if (safe_compare(cmd, "cd")) {
+        if (safe_strlen(arg) == 0) {
+            safe_strcpy(cwd, "/");
+        } else if (safe_compare(arg, "/")) {
+            safe_strcpy(cwd, "/");
+        } else {
+            // For now, only support absolute paths and simple names
+            char path[QuillFS::MAX_PATH_LEN] = {0};
+            build_path(arg, path);
+
+            // Verify it's a valid directory by trying to ls it
+            char tmp[16];
+            int result = g_fs.ls(path, tmp, sizeof(tmp));
+            // Also check if the path itself is root
+            if (safe_compare(path, "/") || result >= 0) {
+                safe_strcpy(cwd, path);
+            } else {
+                kprint("\nNo such directory: ");
+                kprint(arg);
+            }
+        }
+    }
+    else if (safe_compare(cmd, "ls")) {
+        char path[QuillFS::MAX_PATH_LEN] = {0};
+        if (safe_strlen(arg) > 0) {
+            build_path(arg, path);
+        } else {
+            safe_strcpy(path, cwd);
+        }
+
+        char listing[1024] = {0};
+        int count = g_fs.ls(path, listing, sizeof(listing));
+        if (count < 0) {
+            kprint("\nCannot list: ");
+            kprint(path);
+        } else if (count == 0) {
+            kprint("\n(empty)");
+        } else {
+            kprint("\n");
+            kprint(listing);
+        }
+    }
+    else if (safe_compare(cmd, "mkdir")) {
+        if (safe_strlen(arg) == 0) {
+            kprint("\nUsage: mkdir <name>");
+        } else {
+            char path[QuillFS::MAX_PATH_LEN] = {0};
+            build_path(arg, path);
+            if (g_fs.mkdir(path)) {
+                kprint("\nCreated directory: ");
+                kprint(arg);
+            } else {
+                kprint("\nFailed to create directory: ");
+                kprint(arg);
+            }
+        }
+    }
+    else if (safe_compare(cmd, "touch")) {
+        if (safe_strlen(arg) == 0) {
+            kprint("\nUsage: touch <name>");
+        } else {
+            char path[QuillFS::MAX_PATH_LEN] = {0};
+            build_path(arg, path);
+            if (g_fs.touch(path)) {
+                kprint("\nCreated file: ");
+                kprint(arg);
+            } else {
+                kprint("\nFailed to create file: ");
+                kprint(arg);
+            }
+        }
+    }
+    else if (safe_compare(cmd, "cat")) {
+        if (safe_strlen(arg) == 0) {
+            kprint("\nUsage: cat <name>");
+        } else {
+            char path[QuillFS::MAX_PATH_LEN] = {0};
+            build_path(arg, path);
+            char content[QuillFS::MAX_FILE_DATA] = {0};
+            if (g_fs.read_file(path, content, sizeof(content))) {
+                kprint("\n");
+                if (safe_strlen(content) > 0) {
+                    kprint(content);
+                } else {
+                    kprint("(empty file)");
+                }
+            } else {
+                kprint("\nCannot read: ");
+                kprint(arg);
+            }
+        }
+    }
+    else if (safe_compare(cmd, "write")) {
+        if (safe_strlen(arg) == 0) {
+            kprint("\nUsage: write <name> <content>");
+        } else {
+            // Split arg into filename and content at first space
+            char filename[64] = {0};
+            char content[128] = {0};
+            int j = 0;
+            while (arg[j] != ' ' && arg[j] != '\0' && j < 63) {
+                filename[j] = arg[j];
+                j++;
+            }
+            filename[j] = '\0';
+
+            // Skip spaces
+            while (arg[j] == ' ') j++;
+
+            int k = 0;
+            while (arg[j] != '\0' && k < 127) {
+                content[k++] = arg[j++];
+            }
+            content[k] = '\0';
+
+            if (safe_strlen(filename) == 0 || safe_strlen(content) == 0) {
+                kprint("\nUsage: write <name> <content>");
+            } else {
+                char path[QuillFS::MAX_PATH_LEN] = {0};
+                build_path(filename, path);
+                if (g_fs.write_file(path, content)) {
+                    kprint("\nWrote to: ");
+                    kprint(filename);
+                } else {
+                    kprint("\nFailed to write: ");
+                    kprint(filename);
+                }
+            }
+        }
+    }
+    else if (safe_compare(cmd, "rm")) {
+        if (safe_strlen(arg) == 0) {
+            kprint("\nUsage: rm <name>");
+        } else {
+            char path[QuillFS::MAX_PATH_LEN] = {0};
+            build_path(arg, path);
+            if (g_fs.rm(path)) {
+                kprint("\nRemoved: ");
+                kprint(arg);
+            } else {
+                kprint("\nFailed to remove: ");
+                kprint(arg);
+            }
+        }
+    }
     else if (safe_compare(cmd, "reboot")) {
         kprint("\nRebooting...");
-        // Pulse Keyboard Controller
         for (int j = 0; j < 100; j++) {
             outb(0x64, 0xFE);
         }
-        
-        // Force Triple Fault fallback
+
         struct {
             uint16_t limit;
             uint64_t base;
         } __attribute__((packed)) invalid_idtr = {0, 0};
-        
+
         asm volatile("lidt %0; int3" :: "m"(invalid_idtr));
         return;
     }
@@ -118,8 +316,11 @@ void process_command(char* input) {
         asm volatile("cli; hlt");
     }
     else {
-        kprint("\nUnknown command.");
+        kprint("\nUnknown command. Type 'help' for commands.");
     }
+
+done:
+    (void)0; // Label needs a statement
 }
 
 void shell_update(char c) {
