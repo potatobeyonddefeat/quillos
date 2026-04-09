@@ -142,7 +142,9 @@ void process_command(char* input) {
         kprint("\n  meminfo       - Memory statistics");
         kprint("\n  ps            - List tasks");
         kprint("\n  lspci         - List PCI devices");
-        kprint("\n  diskinfo      - Disk status");
+        kprint("\n  diskinfo      - Disk drive info");
+        kprint("\n  readsec <lba> - Read sector as ASCII");
+        kprint("\n  hexdump <lba> - Hex dump a sector");
         kprint("\n  netinfo       - Network status");
         kprint("\n  cluster       - Cluster status");
         kprint("\n  intinfo       - Interrupt statistics");
@@ -477,12 +479,92 @@ void process_command(char* input) {
         }
     }
     else if (safe_compare(cmd, "diskinfo")) {
-        if (Disk::is_present()) {
-            kprint("\nDisk: ATA drive detected on primary bus");
-            kprint("\n  Mode: PIO (Programmed I/O)");
-            kprint("\n  Sector size: 512 bytes");
+        const Disk::BlockDevice* info = Disk::get_info();
+        if (info && info->present) {
+            char buf[32];
+            kprint("\nATA Disk (Primary Bus, PIO Mode):");
+            kprint("\n  Model:   "); kprint(info->model);
+            kprint("\n  Serial:  "); kprint(info->serial);
+            kprint("\n  Sectors: "); itoa(info->total_sectors, buf); kprint(buf);
+            kprint("\n  Size:    "); itoa(info->size_mb, buf); kprint(buf); kprint(" MB");
+            kprint("\n  LBA:     "); kprint(info->lba_supported ? "yes" : "no");
         } else {
-            kprint("\nDisk: No ATA drive detected");
+            kprint("\nNo ATA drive detected");
+        }
+    }
+    else if (safe_compare(cmd, "readsec")) {
+        if (safe_strlen(arg) == 0) {
+            kprint("\nUsage: readsec <lba>");
+        } else {
+            uint32_t lba = 0;
+            int j = 0;
+            while (arg[j] >= '0' && arg[j] <= '9') {
+                lba = lba * 10 + (uint32_t)(arg[j] - '0');
+                j++;
+            }
+            uint8_t sector[512];
+            if (Disk::read_sector(lba, sector)) {
+                char buf[32];
+                kprint("\nSector "); itoa(lba, buf); kprint(buf);
+                kprint(" (first 128 bytes as ASCII):\n  ");
+                for (int b = 0; b < 128; b++) {
+                    char c = (char)sector[b];
+                    if (c >= 32 && c < 127) {
+                        console_putc(c);
+                    } else {
+                        console_putc('.');
+                    }
+                    if ((b + 1) % 64 == 0) kprint("\n  ");
+                }
+            } else {
+                kprint("\nFailed to read sector ");
+                kprint(arg);
+            }
+        }
+    }
+    else if (safe_compare(cmd, "hexdump")) {
+        if (safe_strlen(arg) == 0) {
+            kprint("\nUsage: hexdump <lba>");
+        } else {
+            uint32_t lba = 0;
+            int j = 0;
+            while (arg[j] >= '0' && arg[j] <= '9') {
+                lba = lba * 10 + (uint32_t)(arg[j] - '0');
+                j++;
+            }
+            uint8_t sector[512];
+            if (Disk::read_sector(lba, sector)) {
+                char buf[32];
+                const char* hex = "0123456789ABCDEF";
+                kprint("\nSector "); itoa(lba, buf); kprint(buf); kprint(":");
+                // Show first 256 bytes (16 rows of 16 bytes)
+                for (int row = 0; row < 16; row++) {
+                    kprint("\n  ");
+                    // Offset
+                    itoa_hex((uint32_t)(row * 16), buf); kprint(buf); kprint(": ");
+                    // Hex bytes
+                    for (int col = 0; col < 16; col++) {
+                        uint8_t b = sector[row * 16 + col];
+                        char h[3];
+                        h[0] = hex[b >> 4];
+                        h[1] = hex[b & 0xF];
+                        h[2] = '\0';
+                        kprint(h);
+                        kprint(" ");
+                        if (col == 7) kprint(" "); // Gap in middle
+                    }
+                    kprint(" ");
+                    // ASCII
+                    for (int col = 0; col < 16; col++) {
+                        char c = (char)sector[row * 16 + col];
+                        if (c >= 32 && c < 127) console_putc(c);
+                        else console_putc('.');
+                    }
+                }
+            } else {
+                kprint("\nFailed to read sector ");
+                kprint(arg);
+            }
         }
     }
     else if (safe_compare(cmd, "netinfo")) {
