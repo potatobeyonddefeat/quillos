@@ -50,8 +50,8 @@ void console_clear() {
              framebuffer[y * pitch + x] = current_bg_color;
         }
     }
-    // Cursor reset removed to preserve position during color changes.
-    // Use shell_init() or manual reset if a full clear is needed.
+    cursor_x = 10;
+    cursor_y = 10;
 }
 
 void console_backspace() {
