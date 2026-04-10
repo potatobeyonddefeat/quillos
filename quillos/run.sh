@@ -72,4 +72,5 @@ qemu-system-x86_64 \
     $QEMU_ACCEL \
     -cdrom quillos.iso \
     -drive file="$DISK_IMG",format=raw,if=ide \
-    -m 128M
+    -m 128M \
+    -serial stdio

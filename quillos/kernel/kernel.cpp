@@ -15,6 +15,9 @@
 #include "process.h"
 #include "cpu.h"
 #include "users.h"
+#include "mouse.h"
+#include "clipboard.h"
+#include "serial.h"
 
 static volatile struct limine_framebuffer_request framebuffer_request = {
     .id = LIMINE_FRAMEBUFFER_REQUEST,
@@ -44,6 +47,8 @@ extern "C" void _start(void) {
 
     // 3. Keyboard
     keyboard_init();
+    Mouse::init();
+    Serial::init();
     console_print("\n[OK] Keyboard driver (IRQ 1)");
 
     // 4. CPU info (CPUID)
@@ -78,6 +83,7 @@ extern "C" void _start(void) {
 
     // 13. User account system
     Users::init();
+    Clipboard::init();
 
     // 14. Shell
     console_print("\n");

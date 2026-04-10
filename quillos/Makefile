@@ -35,7 +35,10 @@ KERNEL_OBJS = \
     build/djob.o \
     build/process.o \
     build/cpu.o \
-    build/users.o
+    build/users.o \
+    build/mouse.o \
+    build/clipboard.o \
+    build/serial.o
 
 all: iso/kernel.elf
 

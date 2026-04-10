@@ -14,6 +14,9 @@
 #include "process.h"
 #include "users.h"
 #include "cpu.h"
+#include "mouse.h"
+#include "clipboard.h"
+#include "serial.h"
 
 extern void console_print(const char* str);
 extern void console_clear();
@@ -278,6 +281,13 @@ void process_command(char* input) {
         kprint("\n  specs             - Show system specifications");
         kprint("\n  whoami            - Show current user");
         kprint("\n  logout            - Log out current user");
+        kprint("\n  mouseinfo         - Mouse position and buttons");
+        kprint("\n  copy <text>       - Copy text to clipboard");
+        kprint("\n  copyf <file>      - Copy file contents to clipboard");
+        kprint("\n  paste             - Print clipboard");
+        kprint("\n  pastef <file>     - Write clipboard to file");
+        kprint("\n  cut <file>        - Copy file, then remove it");
+        kprint("\n  pasteh            - Read a line from host terminal");
         kprint("\n  intinfo       - Interrupt statistics");
         kprint("\n  heapinfo      - Heap allocator stats");
         kprint("\n  heaptest      - Test kmalloc/kfree");
@@ -1105,6 +1115,7 @@ void process_command(char* input) {
         show_login_prompt();
         return;
     }
+    #include "shell_mouse.inc"
     else if (safe_compare(cmd, "reboot")) {
         kprint("\nRebooting...");
         for (int j = 0; j < 100; j++) {
