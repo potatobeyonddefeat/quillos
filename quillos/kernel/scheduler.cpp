@@ -231,9 +231,11 @@ namespace Scheduler {
         if (slot >= MAX_TASKS) return false;
         if (slot == 0) return false;           // Can't kill kernel
         if (slot == idle_task_id) return false; // Can't kill idle
-        if (tasks[slot].state == TASK_UNUSED || tasks[slot].state == TASK_DEAD) return false;
+        if (tasks[slot].state == TASK_UNUSED) return false;
 
-        tasks[slot].state = TASK_DEAD;
+        // Force to UNUSED immediately — the task will never be scheduled again.
+        // This is abrupt (no cleanup) but guaranteed to stop it.
+        tasks[slot].state = TASK_UNUSED;
         if (task_count > 0) task_count--;
         return true;
     }

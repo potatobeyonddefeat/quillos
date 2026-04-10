@@ -323,15 +323,21 @@ namespace Process {
 
     bool kill(uint32_t pid) {
         for (uint32_t i = 0; i < MAX_PROCS; i++) {
-            if (procs[i].pid == pid && procs[i].state == PROC_RUNNING) {
+            if (procs[i].pid == pid &&
+                (procs[i].state == PROC_RUNNING || procs[i].state == PROC_SLEEPING ||
+                 procs[i].state == PROC_EXITING)) {
                 if (procs[i].node_ip == 0) {
-                    // Local: set stop flag, scheduler task will clean up
+                    // Local: kill the scheduler task immediately, then clean up
                     stop_flags[i] = true;
-                    procs[i].state = PROC_EXITING;
                     if (procs[i].sched_slot >= 0) {
                         Scheduler::kill_task((uint32_t)procs[i].sched_slot);
                     }
                     procs[i].state = PROC_DEAD;
+                    procs[i].sched_slot = -1;
+
+                    char buf[16];
+                    console_print("\n[PROC] Killed pid=");
+                    itoa(pid, buf); console_print(buf);
                     return true;
                 } else {
                     // Remote: send kill request
