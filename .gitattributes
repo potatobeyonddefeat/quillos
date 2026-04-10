@@ -1,0 +1,8 @@
+# Force Unix line endings for shell scripts (prevents \r errors in WSL/bash)
+*.sh text eol=lf
+Makefile text eol=lf
+linker.ld text eol=lf
+
+# Windows files keep Windows endings
+*.bat text eol=crlf
+*.ps1 text eol=crlf
