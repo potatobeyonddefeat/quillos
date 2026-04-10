@@ -12,6 +12,8 @@
 #include "djob.h"
 #include "jobs.h"
 #include "process.h"
+#include "users.h"
+#include "cpu.h"
 
 extern void console_print(const char* str);
 extern void console_clear();
@@ -41,6 +43,31 @@ int shell_ptr = 0;
 
 // Current working directory
 static char cwd[QuillFS::MAX_PATH_LEN] = "/";
+
+// ================================================================
+// Shell mode state machine — handles login/onboarding/shell
+// ================================================================
+enum ShellMode {
+    MODE_SIGNUP_USER,       // Creating first user: username
+    MODE_SIGNUP_PASS,       // Creating first user: password
+    MODE_SIGNUP_CONFIRM,    // Creating first user: confirm password
+    MODE_ONBOARD_USECASE,   // Pick a usecase (1-4)
+    MODE_ONBOARD_PACKAGES,  // Install packages? y/n
+    MODE_LOGIN_USER,        // Existing user: username
+    MODE_LOGIN_PASS,        // Existing user: password
+    MODE_SHELL,             // Normal shell commands
+};
+
+static ShellMode shell_mode = MODE_SIGNUP_USER;
+static char pending_username[32] = {0};
+static char pending_password[64] = {0};
+static bool password_mode = false; // When true, echo '*' instead of char
+
+static void show_prompt();
+static void show_login_prompt();
+static void show_signup_prompt();
+static void show_onboard_prompt();
+static void enter_shell_mode();
 
 // Internal safe string length
 int safe_strlen(const char* s) {
@@ -87,15 +114,98 @@ static void build_path(const char* name, char* out) {
     }
 }
 
+// Get the local node name (e.g., "node1")
+static const char* get_hostname() {
+    const char* n = Cluster::get_local_name();
+    if (n && n[0]) return n;
+    return "quillos";
+}
+
+static void show_prompt() {
+    Users::User* u = Users::current();
+    kprint("\n");
+    if (u) {
+        kprint(u->name);
+    } else {
+        kprint("quill");
+    }
+    kprint("@");
+    kprint(get_hostname());
+    kprint(":");
+    kprint(cwd);
+    kprint(" > ");
+}
+
+static void show_login_prompt() {
+    if (shell_mode == MODE_LOGIN_USER) {
+        kprint("\nLogin: ");
+        password_mode = false;
+    } else if (shell_mode == MODE_LOGIN_PASS) {
+        kprint("\nPassword: ");
+        password_mode = true;
+    }
+}
+
+static void show_signup_prompt() {
+    if (shell_mode == MODE_SIGNUP_USER) {
+        kprint("\nNo users found. Let's create your account.");
+        kprint("\nUsername: ");
+        password_mode = false;
+    } else if (shell_mode == MODE_SIGNUP_PASS) {
+        kprint("\nPassword: ");
+        password_mode = true;
+    } else if (shell_mode == MODE_SIGNUP_CONFIRM) {
+        kprint("\nConfirm password: ");
+        password_mode = true;
+    }
+}
+
+static void show_onboard_prompt() {
+    if (shell_mode == MODE_ONBOARD_USECASE) {
+        kprint("\n\nWhat will you use QuillOS for?");
+        kprint("\n  1) Developer   — toolchain, build tools");
+        kprint("\n  2) Hosting     — server, networking focus");
+        kprint("\n  3) Cluster     — distributed computing");
+        kprint("\n  4) Daily       — general-purpose");
+        kprint("\nChoose [1-4]: ");
+        password_mode = false;
+    } else if (shell_mode == MODE_ONBOARD_PACKAGES) {
+        kprint("\nInstall default packages for this usecase? [y/n]: ");
+        password_mode = false;
+    }
+}
+
+static void enter_shell_mode() {
+    shell_mode = MODE_SHELL;
+    password_mode = false;
+    Users::User* u = Users::current();
+    kprint("\n\nWelcome to QuillOS");
+    if (u) {
+        kprint(", ");
+        kprint(u->name);
+    }
+    kprint("!\nType 'help' for commands.");
+    show_prompt();
+}
+
 void shell_init() {
     shell_ptr = 0;
     for(int i = 0; i < SHELL_BUFFER_SIZE; i++) shell_buffer[i] = 0;
 
     // Initialize the filesystem
-    if (g_fs.init()) {
-        kprint("\nQuillOS v0.1 - Filesystem ready\n> ");
+    g_fs.init();
+
+    kprint("\n================================");
+    kprint("\n  QuillOS v0.1");
+    kprint("\n================================");
+
+    // Decide initial mode based on whether any users exist
+    if (Users::count() == 0) {
+        shell_mode = MODE_SIGNUP_USER;
+        show_signup_prompt();
     } else {
-        kprint("\nQuillOS v0.1 - Filesystem error\n> ");
+        shell_mode = MODE_LOGIN_USER;
+        show_login_prompt();
     }
 }
 
@@ -158,6 +268,9 @@ void process_command(char* input) {
         kprint("\n  jobs              - Show job history");
         kprint("\n  spawn <type>      - Start a process");
         kprint("\n  procs             - List all processes");
+        kprint("\n  specs             - Show system specifications");
+        kprint("\n  whoami            - Show current user");
+        kprint("\n  logout            - Log out current user");
         kprint("\n  intinfo       - Interrupt statistics");
         kprint("\n  heapinfo      - Heap allocator stats");
         kprint("\n  heaptest      - Test kmalloc/kfree");
@@ -857,6 +970,102 @@ void process_command(char* input) {
             }
         }
     }
+    else if (safe_compare(cmd, "specs")) {
+        char buf[32];
+        const CPU::Info* ci = CPU::get_info();
+        kprint("\n============ SYSTEM SPECS ============");
+        kprint("\nHost: "); kprint(get_hostname());
+
+        kprint("\n\n[CPU]");
+        kprint("\n  Vendor:  "); kprint(ci->vendor);
+        kprint("\n  Brand:   "); kprint(ci->brand);
+        kprint("\n  Family:  "); itoa(ci->family, buf); kprint(buf);
+        kprint("  Model: "); itoa(ci->model, buf); kprint(buf);
+        kprint("  Stepping: "); itoa(ci->stepping, buf); kprint(buf);
+        kprint("\n  Features:");
+        if (ci->has_fpu)        kprint(" FPU");
+        if (ci->has_mmx)        kprint(" MMX");
+        if (ci->has_sse)        kprint(" SSE");
+        if (ci->has_sse2)       kprint(" SSE2");
+        if (ci->has_pae)        kprint(" PAE");
+        if (ci->has_apic)       kprint(" APIC");
+        if (ci->has_x2apic)     kprint(" x2APIC");
+        if (ci->has_hypervisor) kprint(" HV");
+
+        kprint("\n\n[Memory]");
+        kprint("\n  Total: "); itoa(Memory::pmm_total_bytes() / 1024, buf); kprint(buf); kprint(" KB");
+        kprint("\n  Used:  "); itoa(Memory::pmm_used_pages() * 4, buf); kprint(buf); kprint(" KB");
+        kprint("\n  Free:  "); itoa(Memory::pmm_free_pages() * 4, buf); kprint(buf); kprint(" KB");
+        kprint("\n  Heap:  "); itoa(Memory::heap_total_size() / 1024, buf); kprint(buf); kprint(" KB committed, ");
+        itoa(Memory::heap_allocated_bytes(), buf); kprint(buf); kprint(" bytes in use");
+
+        kprint("\n\n[Disk]");
+        const Disk::BlockDevice* di = Disk::get_info();
+        if (di && di->present) {
+            kprint("\n  Model:   "); kprint(di->model);
+            kprint("\n  Sectors: "); itoa(di->total_sectors, buf); kprint(buf);
+            kprint("\n  Size:    "); itoa(di->size_mb, buf); kprint(buf); kprint(" MB");
+        } else {
+            kprint("\n  (none detected)");
+        }
+
+        kprint("\n\n[Network]");
+        if (Network::is_present()) {
+            const uint8_t* mac = Network::get_mac();
+            uint32_t ip_h = Network::ntohl(Network::get_ip());
+            kprint("\n  IP:  ");
+            itoa((ip_h >> 24) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa((ip_h >> 16) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa((ip_h >> 8) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa(ip_h & 0xFF, buf); kprint(buf);
+            kprint("\n  MAC: ");
+            const char* hex = "0123456789ABCDEF";
+            for (int m = 0; m < 6; m++) {
+                char h[4];
+                h[0] = hex[mac[m]>>4]; h[1] = hex[mac[m]&0xF];
+                h[2] = (m < 5) ? ':' : '\0'; h[3] = '\0';
+                kprint(h);
+            }
+            kprint("\n  Packets: sent "); itoa(Network::get_packets_sent(), buf); kprint(buf);
+            kprint(", recv "); itoa(Network::get_packets_received(), buf); kprint(buf);
+        } else {
+            kprint("\n  (no NIC)");
+        }
+
+        kprint("\n\n[Cluster]");
+        kprint("\n  Local node: "); kprint(Cluster::get_local_name());
+        kprint("\n  Peers:      "); itoa(Cluster::get_peer_count(), buf); kprint(buf);
+        for (uint32_t p = 0; p < Cluster::get_peer_count(); p++) {
+            const Cluster::Node* peer = Cluster::get_peer(p);
+            if (!peer) continue;
+            kprint("\n    - "); kprint(peer->name); kprint(" (10.0.0.");
+            uint32_t h = Network::ntohl(peer->ip) & 0xFF;
+            itoa(h, buf); kprint(buf); kprint(")");
+        }
+
+        kprint("\n\n[User]");
+        Users::User* u = Users::current();
+        if (u) {
+            kprint("\n  Name:    "); kprint(u->name);
+            kprint("\n  Usecase: "); kprint(Users::usecase_name(u->usecase));
+        }
+
+        kprint("\n\n[Uptime] "); itoa(ticks / 1000, buf); kprint(buf); kprint(" seconds");
+        kprint("\n======================================");
+    }
+    else if (safe_compare(cmd, "whoami")) {
+        Users::User* u = Users::current();
+        kprint("\n");
+        if (u) kprint(u->name);
+        else kprint("(no user)");
+    }
+    else if (safe_compare(cmd, "logout")) {
+        Users::clear_current();
+        kprint("\nLogged out.");
+        shell_mode = MODE_LOGIN_USER;
+        show_login_prompt();
+        return;
+    }
     else if (safe_compare(cmd, "reboot")) {
         kprint("\nRebooting...");
         for (int j = 0; j < 100; j++) {
@@ -884,13 +1093,142 @@ done:
     (void)0; // Label needs a statement
 }
 
+// ================================================================
+// Non-shell mode handlers — login, signup, onboarding
+// ================================================================
+
+static void handle_line(char* line) {
+    switch (shell_mode) {
+        case MODE_SIGNUP_USER: {
+            if (safe_strlen(line) == 0) {
+                kprint("\nUsername cannot be empty.");
+                show_signup_prompt();
+                return;
+            }
+            safe_strcpy(pending_username, line);
+            shell_mode = MODE_SIGNUP_PASS;
+            show_signup_prompt();
+            return;
+        }
+        case MODE_SIGNUP_PASS: {
+            if (safe_strlen(line) < 3) {
+                kprint("\nPassword must be at least 3 characters.");
+                shell_mode = MODE_SIGNUP_PASS;
+                show_signup_prompt();
+                return;
+            }
+            safe_strcpy(pending_password, line);
+            shell_mode = MODE_SIGNUP_CONFIRM;
+            show_signup_prompt();
+            return;
+        }
+        case MODE_SIGNUP_CONFIRM: {
+            if (!safe_compare(pending_password, line)) {
+                kprint("\nPasswords do not match. Try again.");
+                shell_mode = MODE_SIGNUP_PASS;
+                pending_password[0] = '\0';
+                show_signup_prompt();
+                return;
+            }
+            if (!Users::create(pending_username, pending_password)) {
+                kprint("\nFailed to create user.");
+                shell_mode = MODE_SIGNUP_USER;
+                show_signup_prompt();
+                return;
+            }
+            Users::User* u = Users::find(pending_username);
+            Users::set_current(u);
+            pending_password[0] = '\0';
+            kprint("\n\nAccount created: "); kprint(pending_username);
+            shell_mode = MODE_ONBOARD_USECASE;
+            show_onboard_prompt();
+            return;
+        }
+        case MODE_ONBOARD_USECASE: {
+            Users::UseCase uc = Users::USECASE_NONE;
+            if (line[0] == '1') uc = Users::USECASE_DEV;
+            else if (line[0] == '2') uc = Users::USECASE_HOSTING;
+            else if (line[0] == '3') uc = Users::USECASE_CLUSTER;
+            else if (line[0] == '4') uc = Users::USECASE_DAILY;
+            else {
+                kprint("\nInvalid choice. Enter 1, 2, 3, or 4.");
+                show_onboard_prompt();
+                return;
+            }
+            Users::set_usecase(Users::current(), uc);
+            kprint("\nUsecase set: "); kprint(Users::usecase_name(uc));
+            shell_mode = MODE_ONBOARD_PACKAGES;
+            show_onboard_prompt();
+            return;
+        }
+        case MODE_ONBOARD_PACKAGES: {
+            if (line[0] == 'y' || line[0] == 'Y') {
+                Users::User* u = Users::current();
+                kprint("\nInstalling packages for ");
+                kprint(Users::usecase_name(u->usecase));
+                kprint("...");
+                // Simulate package install based on usecase
+                if (u->usecase == Users::USECASE_DEV) {
+                    kprint("\n  + gcc, nasm, make, git");
+                } else if (u->usecase == Users::USECASE_HOSTING) {
+                    kprint("\n  + httpd, sshd, firewall");
+                } else if (u->usecase == Users::USECASE_CLUSTER) {
+                    kprint("\n  + cluster-tools, mpi, job-runner");
+                } else {
+                    kprint("\n  + base utilities");
+                }
+                kprint("\nDone.");
+            } else {
+                kprint("\nSkipped. You can install packages later.");
+            }
+            Users::complete_onboarding(Users::current());
+            enter_shell_mode();
+            return;
+        }
+        case MODE_LOGIN_USER: {
+            if (safe_strlen(line) == 0) {
+                show_login_prompt();
+                return;
+            }
+            safe_strcpy(pending_username, line);
+            shell_mode = MODE_LOGIN_PASS;
+            show_login_prompt();
+            return;
+        }
+        case MODE_LOGIN_PASS: {
+            if (!Users::verify(pending_username, line)) {
+                kprint("\nLogin failed.");
+                pending_username[0] = '\0';
+                shell_mode = MODE_LOGIN_USER;
+                show_login_prompt();
+                return;
+            }
+            Users::User* u = Users::find(pending_username);
+            Users::set_current(u);
+            if (!u->onboarded) {
+                shell_mode = MODE_ONBOARD_USECASE;
+                show_onboard_prompt();
+            } else {
+                enter_shell_mode();
+            }
+            return;
+        }
+        case MODE_SHELL: {
+            process_command(line);
+            show_prompt();
+            return;
+        }
+    }
+}
+
 void shell_update(char c) {
     if (c == '\n') {
         shell_buffer[shell_ptr] = '\0';
-        process_command(shell_buffer);
+        char local_copy[SHELL_BUFFER_SIZE];
+        for (int i = 0; i < SHELL_BUFFER_SIZE; i++) local_copy[i] = shell_buffer[i];
         shell_ptr = 0;
-        for(int i = 0; i < SHELL_BUFFER_SIZE; i++) shell_buffer[i] = 0;
-        kprint("\n> ");
+        for (int i = 0; i < SHELL_BUFFER_SIZE; i++) shell_buffer[i] = 0;
+        handle_line(local_copy);
     } else if (c == '\b') {
         if (shell_ptr > 0) {
             shell_ptr--;
@@ -900,7 +1238,12 @@ void shell_update(char c) {
     } else {
         if (shell_ptr < SHELL_BUFFER_SIZE - 1) {
             shell_buffer[shell_ptr++] = c;
-            console_putc(c);
+            // Echo: mask as '*' in password mode
+            if (password_mode) {
+                console_putc('*');
+            } else {
+                console_putc(c);
+            }
         }
     }
 }

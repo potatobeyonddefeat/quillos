@@ -2,11 +2,13 @@
 # ============================================================
 # QuillOS Cluster Test — Launch 2 nodes on a virtual network
 #
-# Creates two QEMU instances connected via a socket-based
-# virtual network so they can communicate:
+# Creates two QEMU instances connected via a direct socket
+# so they can exchange Ethernet frames:
 #
-#   Node 0: 10.0.0.2 (port 9000)  — window "QuillOS Node 0"
-#   Node 1: 10.0.0.3 (port 9001)  — window "QuillOS Node 1"
+#   Node 0: 10.0.0.1  (listens on port 12340)
+#   Node 1: 10.0.0.2  (connects to port 12340)
+#
+# Works on Linux, macOS, and WSL.
 #
 # Usage:  bash run-cluster.sh
 #         bash run-cluster.sh --build   (rebuild first)
@@ -62,45 +64,45 @@ elif [ "$IS_WSL" = false ] && [ -e /dev/kvm ]; then
     QEMU_ACCEL="-accel kvm"
 fi
 
+LINK_PORT=12340
+
 echo ""
 echo "============================================"
 echo "  QuillOS Cluster — Launching 2 nodes"
 echo "============================================"
 echo ""
-echo "  Node 0: MAC 52:54:00:00:00:01"
-echo "  Node 1: MAC 52:54:00:00:00:02"
-echo "  Network: virtual switch (socket mcast)"
-echo ""
-echo "  Both windows will open. Use 'cluster'"
-echo "  and 'netinfo' commands in each shell."
+echo "  Node 0: MAC 52:54:00:00:00:01 (10.0.0.1) [listens :$LINK_PORT]"
+echo "  Node 1: MAC 52:54:00:00:00:02 (10.0.0.2) [connects :$LINK_PORT]"
 echo ""
 
-# Launch Node 0 (background)
+# Launch Node 0 — LISTENS for Node 1 to connect
 qemu-system-x86_64 \
     $QEMU_ACCEL \
     -name "QuillOS Node 0" \
     -cdrom quillos.iso \
     -drive file=node0_disk.img,format=raw,if=ide \
     -m 128M \
-    -net nic,model=e1000,macaddr=52:54:00:00:00:01 \
-    -net socket,mcast=230.0.0.1:1234 \
+    -netdev socket,id=net0,listen=127.0.0.1:$LINK_PORT \
+    -device e1000,netdev=net0,mac=52:54:00:00:00:01 \
     &
 
-# Small delay so windows don't overlap
-sleep 1
+NODE0_PID=$!
 
-# Launch Node 1 (foreground — script waits for this one)
+# Wait for Node 0's listen socket to be ready
+sleep 2
+
+# Launch Node 1 — CONNECTS to Node 0
 qemu-system-x86_64 \
     $QEMU_ACCEL \
     -name "QuillOS Node 1" \
     -cdrom quillos.iso \
     -drive file=node1_disk.img,format=raw,if=ide \
     -m 128M \
-    -net nic,model=e1000,macaddr=52:54:00:00:00:02 \
-    -net socket,mcast=230.0.0.1:1234 \
+    -netdev socket,id=net0,connect=127.0.0.1:$LINK_PORT \
+    -device e1000,netdev=net0,mac=52:54:00:00:00:02 \
 
 # When Node 1 closes, kill Node 0
-kill %1 2>/dev/null
+kill $NODE0_PID 2>/dev/null
 wait 2>/dev/null
 
 echo ""

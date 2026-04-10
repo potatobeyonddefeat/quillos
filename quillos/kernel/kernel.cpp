@@ -13,6 +13,8 @@
 #include "cluster.h"
 #include "djob.h"
 #include "process.h"
+#include "cpu.h"
+#include "users.h"
 
 static volatile struct limine_framebuffer_request framebuffer_request = {
     .id = LIMINE_FRAMEBUFFER_REQUEST,
@@ -44,7 +46,10 @@ extern "C" void _start(void) {
     keyboard_init();
     console_print("\n[OK] Keyboard driver (IRQ 1)");
 
-    // 4. Memory manager (PMM + heap)
+    // 4. CPU info (CPUID)
+    CPU::init();
+
+    // 5. Memory manager (PMM + heap)
     Memory::init();
 
     // 5. Scheduler (preemptive, needed before cluster tasks)
@@ -71,7 +76,10 @@ extern "C" void _start(void) {
     // 12. Process manager
     Process::init();
 
-    // 13. Shell
+    // 13. User account system
+    Users::init();
+
+    // 14. Shell
     console_print("\n");
     shell_init();
 
