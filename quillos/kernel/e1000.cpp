@@ -11,7 +11,6 @@ namespace E1000 {
     // E1000 register offsets
     static constexpr uint32_t REG_CTRL   = 0x0000;
     static constexpr uint32_t REG_STATUS = 0x0008;
-    static constexpr uint32_t REG_EERD   = 0x0014;
     static constexpr uint32_t REG_ICR    = 0x00C0;
     static constexpr uint32_t REG_IMS    = 0x00D0;
     static constexpr uint32_t REG_IMC    = 0x00D8;
@@ -32,35 +31,19 @@ namespace E1000 {
     static constexpr uint32_t REG_RAH    = 0x5404;
     static constexpr uint32_t REG_MTA    = 0x5200;
 
-    // CTRL bits
     static constexpr uint32_t CTRL_RST  = (1 << 26);
     static constexpr uint32_t CTRL_SLU  = (1 << 6);
     static constexpr uint32_t CTRL_ASDE = (1 << 5);
-
-    // RCTL bits
     static constexpr uint32_t RCTL_EN   = (1 << 1);
     static constexpr uint32_t RCTL_BAM  = (1 << 15);
-    static constexpr uint32_t RCTL_BSIZE_2048 = (0 << 16);
     static constexpr uint32_t RCTL_SECRC = (1 << 26);
-
-    // TCTL bits
     static constexpr uint32_t TCTL_EN   = (1 << 1);
     static constexpr uint32_t TCTL_PSP  = (1 << 3);
 
-    // TX descriptor command bits
-    static constexpr uint8_t TCMD_EOP  = (1 << 0);
-    static constexpr uint8_t TCMD_IFCS = (1 << 1);
-    static constexpr uint8_t TCMD_RS   = (1 << 3);
-
-    // RX descriptor status bits
-    static constexpr uint8_t RSTA_DD   = (1 << 0);
-    static constexpr uint8_t RSTA_EOP  = (1 << 1);
-
-    static constexpr int NUM_TX = 32;
-    static constexpr int NUM_RX = 32;
+    static constexpr int NUM_TX = 8;
+    static constexpr int NUM_RX = 8;
     static constexpr int BUF_SIZE = 2048;
 
-    // Descriptor structures
     struct TxDesc {
         uint64_t addr;
         uint16_t length;
@@ -80,13 +63,17 @@ namespace E1000 {
         uint16_t special;
     } __attribute__((packed));
 
-    // Static descriptor rings and buffers (must be physically accessible)
-    static TxDesc tx_ring[NUM_TX] __attribute__((aligned(128)));
-    static RxDesc rx_ring[NUM_RX] __attribute__((aligned(128)));
-    static uint8_t tx_bufs[NUM_TX][BUF_SIZE] __attribute__((aligned(16)));
-    static uint8_t rx_bufs[NUM_RX][BUF_SIZE] __attribute__((aligned(16)));
-
+    // All DMA memory is PMM-allocated (physical addresses known)
     static volatile uint32_t* mmio = nullptr;
+    static TxDesc* tx_ring = nullptr;  // Virtual pointer to PMM-allocated ring
+    static RxDesc* rx_ring = nullptr;
+    static uint64_t tx_ring_phys = 0;
+    static uint64_t rx_ring_phys = 0;
+    static uint64_t tx_buf_phys[NUM_TX];
+    static uint8_t* tx_buf_virt[NUM_TX];
+    static uint64_t rx_buf_phys[NUM_RX];
+    static uint8_t* rx_buf_virt[NUM_RX];
+
     static uint8_t mac_addr[6];
     static int tx_cur = 0;
     static int rx_cur = 0;
@@ -96,57 +83,72 @@ namespace E1000 {
     static void wr(uint32_t reg, uint32_t val) { mmio[reg / 4] = val; }
 
     bool init() {
-        // Find E1000 on PCI bus (Intel 82540EM: 8086:100E)
+        // Find E1000 on PCI (8086:100E or 8086:100F)
         const PCI::Device* nic = nullptr;
         for (uint32_t i = 0; i < PCI::get_count(); i++) {
             const PCI::Device* d = PCI::get_device(i);
-            if (d && d->vendor_id == 0x8086 && d->device_id == 0x100E) {
+            if (d && d->vendor_id == 0x8086 &&
+                (d->device_id == 0x100E || d->device_id == 0x100F)) {
                 nic = d;
                 break;
             }
         }
-        // Also check for 82545EM (8086:100F) used by some QEMU configs
         if (!nic) {
+            // Try finding any network controller (class 0x02)
             for (uint32_t i = 0; i < PCI::get_count(); i++) {
                 const PCI::Device* d = PCI::get_device(i);
-                if (d && d->vendor_id == 0x8086 &&
-                    (d->device_id == 0x100F || d->device_id == 0x10D3 ||
-                     d->device_id == 0x153A)) {
+                if (d && d->class_code == 0x02 && d->vendor_id == 0x8086) {
                     nic = d;
                     break;
                 }
             }
         }
         if (!nic) {
-            console_print("\n[E1000] No Intel E1000 NIC found on PCI bus");
+            console_print("\n[E1000] No Intel NIC found");
             return false;
         }
 
-        // Read BAR0 (MMIO base address)
-        uint32_t bar0 = PCI::config_read(nic->bus, nic->device, nic->function, 0x10);
-        bar0 &= ~0xF; // Mask flags
-        if (bar0 == 0) {
+        char buf[32];
+        console_print("\n[E1000] Found PCI ");
+        itoa(nic->vendor_id, buf); console_print(buf);
+        console_print(":");
+        itoa(nic->device_id, buf); console_print(buf);
+
+        // Read BAR0 — may be 64-bit
+        uint32_t bar0_low = PCI::config_read(nic->bus, nic->device, nic->function, 0x10);
+        uint64_t bar0_phys = bar0_low & ~0xFULL;
+
+        // Check if 64-bit BAR (type bits 1:2 == 0b10)
+        if ((bar0_low & 0x6) == 0x4) {
+            uint32_t bar0_high = PCI::config_read(nic->bus, nic->device, nic->function, 0x14);
+            bar0_phys |= ((uint64_t)bar0_high << 32);
+        }
+
+        if (bar0_phys == 0) {
             console_print("\n[E1000] BAR0 is zero");
             return false;
         }
 
-        // Enable PCI bus mastering (required for DMA)
+        // Enable PCI bus mastering
         PCI::enable_bus_mastering(nic->bus, nic->device, nic->function);
 
         // Map MMIO via HHDM
-        mmio = (volatile uint32_t*)Memory::phys_to_virt((uint64_t)bar0);
+        mmio = (volatile uint32_t*)Memory::phys_to_virt(bar0_phys);
 
-        // Reset the device
-        wr(REG_CTRL, rd(REG_CTRL) | CTRL_RST);
-        for (volatile int i = 0; i < 100000; i++);  // Wait for reset
-        wr(REG_CTRL, rd(REG_CTRL) & ~CTRL_RST);
-        for (volatile int i = 0; i < 100000; i++);
+        // Reset
+        uint32_t ctrl = rd(REG_CTRL);
+        wr(REG_CTRL, ctrl | CTRL_RST);
+        for (volatile int i = 0; i < 200000; i++);
+        // Wait for reset to complete
+        while (rd(REG_CTRL) & CTRL_RST) {
+            for (volatile int i = 0; i < 1000; i++);
+        }
 
-        // Disable interrupts (we'll poll)
+        // Disable interrupts
         wr(REG_IMC, 0xFFFFFFFF);
-        rd(REG_ICR); // Clear pending
+        rd(REG_ICR);
 
-        // Set link up
+        // Link up
         wr(REG_CTRL, rd(REG_CTRL) | CTRL_SLU | CTRL_ASDE);
 
         // Read MAC from RAL/RAH
@@ -159,59 +161,79 @@ namespace E1000 {
         mac_addr[4] = rah & 0xFF;
         mac_addr[5] = (rah >> 8) & 0xFF;
 
+        // Check for valid MAC
+        if (mac_addr[0] == 0 && mac_addr[1] == 0 && mac_addr[2] == 0 &&
+            mac_addr[3] == 0 && mac_addr[4] == 0 && mac_addr[5] == 0) {
+            console_print("\n[E1000] MAC is all zeros — EEPROM issue");
+            return false;
+        }
+
         // Clear multicast table
-        for (int i = 0; i < 128; i++) {
-            wr(REG_MTA + i * 4, 0);
-        }
+        for (int i = 0; i < 128; i++) wr(REG_MTA + i * 4, 0);
 
-        // ---- Initialize RX ----
+        // ---- Allocate RX ring and buffers from PMM ----
+        rx_ring_phys = Memory::pmm_alloc_page();
+        if (!rx_ring_phys) { console_print("\n[E1000] RX ring alloc failed"); return false; }
+        rx_ring = (RxDesc*)Memory::phys_to_virt(rx_ring_phys);
+
         for (int i = 0; i < NUM_RX; i++) {
-            rx_ring[i].addr = Memory::virt_to_phys(&rx_bufs[i][0]);
+            rx_buf_phys[i] = Memory::pmm_alloc_page();
+            if (!rx_buf_phys[i]) { console_print("\n[E1000] RX buf alloc failed"); return false; }
+            rx_buf_virt[i] = (uint8_t*)Memory::phys_to_virt(rx_buf_phys[i]);
+
+            rx_ring[i].addr = rx_buf_phys[i];
             rx_ring[i].status = 0;
+            rx_ring[i].length = 0;
         }
 
-        uint64_t rx_phys = Memory::virt_to_phys(&rx_ring[0]);
-        wr(REG_RDBAL, (uint32_t)(rx_phys & 0xFFFFFFFF));
-        wr(REG_RDBAH, (uint32_t)(rx_phys >> 32));
+        wr(REG_RDBAL, (uint32_t)(rx_ring_phys & 0xFFFFFFFF));
+        wr(REG_RDBAH, (uint32_t)(rx_ring_phys >> 32));
         wr(REG_RDLEN, NUM_RX * sizeof(RxDesc));
         wr(REG_RDH, 0);
         wr(REG_RDT, NUM_RX - 1);
         rx_cur = 0;
 
-        // Enable receiver: accept broadcast, 2048-byte buffers, strip CRC
-        wr(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_BSIZE_2048 | RCTL_SECRC);
+        wr(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC);
 
-        // ---- Initialize TX ----
+        // ---- Allocate TX ring and buffers from PMM ----
+        tx_ring_phys = Memory::pmm_alloc_page();
+        if (!tx_ring_phys) { console_print("\n[E1000] TX ring alloc failed"); return false; }
+        tx_ring = (TxDesc*)Memory::phys_to_virt(tx_ring_phys);
+
         for (int i = 0; i < NUM_TX; i++) {
-            tx_ring[i].addr = Memory::virt_to_phys(&tx_bufs[i][0]);
-            tx_ring[i].status = 1; // DD bit set = descriptor available
+            tx_buf_phys[i] = Memory::pmm_alloc_page();
+            if (!tx_buf_phys[i]) { console_print("\n[E1000] TX buf alloc failed"); return false; }
+            tx_buf_virt[i] = (uint8_t*)Memory::phys_to_virt(tx_buf_phys[i]);
+
+            tx_ring[i].addr = tx_buf_phys[i];
+            tx_ring[i].status = 1; // DD = done (available)
             tx_ring[i].cmd = 0;
+            tx_ring[i].length = 0;
         }
 
-        uint64_t tx_phys = Memory::virt_to_phys(&tx_ring[0]);
-        wr(REG_TDBAL, (uint32_t)(tx_phys & 0xFFFFFFFF));
-        wr(REG_TDBAH, (uint32_t)(tx_phys >> 32));
+        wr(REG_TDBAL, (uint32_t)(tx_ring_phys & 0xFFFFFFFF));
+        wr(REG_TDBAH, (uint32_t)(tx_ring_phys >> 32));
         wr(REG_TDLEN, NUM_TX * sizeof(TxDesc));
         wr(REG_TDH, 0);
         wr(REG_TDT, 0);
         tx_cur = 0;
 
-        // Enable transmitter + pad short packets
         wr(REG_TCTL, TCTL_EN | TCTL_PSP | (15 << 4) | (64 << 12));
         wr(REG_TIPG, 10 | (10 << 10) | (10 << 20));
 
         ready = true;
 
-        char buf[8];
-        console_print("\n[E1000] Ready, MAC ");
+        console_print("\n[E1000] MAC ");
         for (int i = 0; i < 6; i++) {
             const char* hex = "0123456789ABCDEF";
-            buf[0] = hex[mac_addr[i] >> 4];
-            buf[1] = hex[mac_addr[i] & 0xF];
-            buf[2] = (i < 5) ? ':' : '\0';
-            buf[3] = '\0';
-            console_print(buf);
+            char h[4];
+            h[0] = hex[mac_addr[i] >> 4];
+            h[1] = hex[mac_addr[i] & 0xF];
+            h[2] = (i < 5) ? ':' : '\0';
+            h[3] = '\0';
+            console_print(h);
         }
+        console_print(", link up");
 
         return true;
     }
@@ -219,55 +241,46 @@ namespace E1000 {
     bool send(const uint8_t* data, uint16_t len) {
         if (!ready || !data || len == 0 || len > 1514) return false;
 
-        // Wait for current TX descriptor to be available
-        while (!(tx_ring[tx_cur].status & 1)) {
-            // Descriptor not done yet — spin briefly
-            for (volatile int i = 0; i < 1000; i++);
+        // Wait for descriptor to be available
+        int timeout = 10000;
+        while (!(tx_ring[tx_cur].status & 1) && --timeout > 0) {
+            for (volatile int i = 0; i < 100; i++);
         }
+        if (timeout == 0) return false;
 
-        // Copy packet data into TX buffer
+        // Copy packet to DMA buffer
         for (uint16_t i = 0; i < len; i++) {
-            tx_bufs[tx_cur][i] = data[i];
+            tx_buf_virt[tx_cur][i] = data[i];
         }
 
-        // Set up descriptor
         tx_ring[tx_cur].length = len;
-        tx_ring[tx_cur].cmd = TCMD_EOP | TCMD_IFCS | TCMD_RS;
+        tx_ring[tx_cur].cmd = (1<<0) | (1<<1) | (1<<3); // EOP|IFCS|RS
         tx_ring[tx_cur].status = 0;
 
-        // Bump tail pointer — this tells the E1000 to transmit
-        int old_cur = tx_cur;
         tx_cur = (tx_cur + 1) % NUM_TX;
         wr(REG_TDT, tx_cur);
 
-        (void)old_cur;
         return true;
     }
 
     bool poll_receive(uint8_t* data, uint16_t* len) {
         if (!ready || !data || !len) return false;
 
-        // Check if current RX descriptor has a packet
-        if (!(rx_ring[rx_cur].status & RSTA_DD)) {
-            return false; // No packet available
-        }
+        if (!(rx_ring[rx_cur].status & 1)) return false; // No packet (DD=0)
 
-        // Read the packet
         uint16_t pkt_len = rx_ring[rx_cur].length;
         if (pkt_len > BUF_SIZE) pkt_len = BUF_SIZE;
 
         for (uint16_t i = 0; i < pkt_len; i++) {
-            data[i] = rx_bufs[rx_cur][i];
+            data[i] = rx_buf_virt[rx_cur][i];
         }
         *len = pkt_len;
 
-        // Reset descriptor for reuse
+        // Reset descriptor
         rx_ring[rx_cur].status = 0;
-
-        // Advance and update tail
-        int old_cur = rx_cur;
+        int old = rx_cur;
         rx_cur = (rx_cur + 1) % NUM_RX;
-        wr(REG_RDT, old_cur);
+        wr(REG_RDT, old);
 
         return true;
     }
