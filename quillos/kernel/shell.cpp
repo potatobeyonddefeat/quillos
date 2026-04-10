@@ -997,10 +997,10 @@ void process_command(char* input) {
                 }
             }
 
-            kprint("\n-- nano: ");
+            kprint("\n--- nano: ");
             kprint(arg);
-            kprint(" --");
-            kprint("\n(Type text. Enter for newline. Type ':wq' on its own line to save & exit, ':q' to quit.)");
+            kprint(" ---");
+            kprint("\n[Ctrl+X = save & exit | Ctrl+S = save | Ctrl+Q = quit | Backspace]");
             kprint("\n");
             // Show existing contents
             for (int i = 0; i < edit_len; i++) console_putc(edit_buf[i]);
@@ -1253,45 +1253,101 @@ static void handle_line(char* line) {
             return;
         }
         case MODE_EDIT: {
-            // Check for save/quit commands
-            if (safe_compare(line, ":wq") || safe_compare(line, ":w")) {
-                edit_buf[edit_len] = '\0';
-                if (g_fs.write_file(edit_filename, edit_buf)) {
-                    kprint("\nSaved: ");
-                    kprint(edit_filename);
-                } else {
-                    kprint("\nFailed to save");
-                }
-                if (safe_compare(line, ":wq")) {
-                    shell_mode = MODE_SHELL;
-                    show_prompt();
-                }
-                return;
-            }
-            if (safe_compare(line, ":q") || safe_compare(line, ":q!")) {
-                kprint("\nExited without saving");
-                shell_mode = MODE_SHELL;
-                show_prompt();
-                return;
-            }
-            // Append the line + newline to the edit buffer
-            int i = 0;
-            while (line[i] && edit_len < 1023) {
-                edit_buf[edit_len++] = line[i++];
-            }
-            if (edit_len < 1023) edit_buf[edit_len++] = '\n';
-            // Newline is already echoed by shell_update on Enter
+            // MODE_EDIT handles keys directly in shell_update, not here.
+            // This case should never be reached.
             return;
         }
         case MODE_SHELL: {
             process_command(line);
-            show_prompt();
+            // Only re-show prompt if we're still in shell mode.
+            // Commands like 'nano' may have switched us to MODE_EDIT.
+            if (shell_mode == MODE_SHELL) {
+                show_prompt();
+            }
             return;
         }
     }
 }
 
+// ================================================================
+// Editor key handling — char-by-char, with Ctrl shortcuts
+// ================================================================
+static void edit_update(char c) {
+    // Ctrl+X — save and exit
+    if (c == 0x18) {
+        edit_buf[edit_len] = '\0';
+        if (g_fs.write_file(edit_filename, edit_buf)) {
+            kprint("\n[Saved ");
+            kprint(edit_filename);
+            kprint("]");
+        } else {
+            kprint("\n[Save failed]");
+        }
+        shell_mode = MODE_SHELL;
+        show_prompt();
+        return;
+    }
+    // Ctrl+S — save, stay in editor
+    if (c == 0x13) {
+        edit_buf[edit_len] = '\0';
+        if (g_fs.write_file(edit_filename, edit_buf)) {
+            kprint("\n[Saved]\n");
+        } else {
+            kprint("\n[Save failed]\n");
+        }
+        return;
+    }
+    // Ctrl+Q / Ctrl+C — quit without saving
+    if (c == 0x11 || c == 0x03) {
+        kprint("\n[Cancelled]");
+        shell_mode = MODE_SHELL;
+        show_prompt();
+        return;
+    }
+    // Backspace
+    if (c == '\b') {
+        if (edit_len > 0) {
+            edit_len--;
+            console_backspace();
+        }
+        return;
+    }
+    // Newline
+    if (c == '\n') {
+        if (edit_len < 1023) {
+            edit_buf[edit_len++] = '\n';
+            console_putc('\n');
+        }
+        return;
+    }
+    // Printable character
+    if (c >= 32 && c < 127) {
+        if (edit_len < 1023) {
+            edit_buf[edit_len++] = c;
+            console_putc(c);
+        }
+    }
+    // All other control chars (other than the ones above) are ignored in edit mode
+}
+
 void shell_update(char c) {
+    // Editor mode: bypass line buffering entirely
+    if (shell_mode == MODE_EDIT) {
+        edit_update(c);
+        return;
+    }
+
+    // Ctrl+C in any mode aborts current input line
+    if (c == 0x03) {
+        shell_ptr = 0;
+        for (int i = 0; i < SHELL_BUFFER_SIZE; i++) shell_buffer[i] = 0;
+        kprint("^C");
+        if (shell_mode == MODE_SHELL) {
+            show_prompt();
+        }
+        return;
+    }
+
     if (c == '\n') {
         shell_buffer[shell_ptr] = '\0';
         char local_copy[SHELL_BUFFER_SIZE];
@@ -1305,10 +1361,10 @@ void shell_update(char c) {
             shell_buffer[shell_ptr] = '\0';
             console_backspace();
         }
-    } else {
+    } else if (c >= 32 && c < 127) {
+        // Only accept printable characters in normal input
         if (shell_ptr < SHELL_BUFFER_SIZE - 1) {
             shell_buffer[shell_ptr++] = c;
-            // Echo: mask as '*' in password mode
             if (password_mode) {
                 console_putc('*');
             } else {
@@ -1316,4 +1372,5 @@ void shell_update(char c) {
             }
         }
     }
+    // Other control chars (Ctrl+A, Ctrl+E, etc.) ignored in shell mode
 }
