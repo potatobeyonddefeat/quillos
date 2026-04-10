@@ -3,6 +3,7 @@
 #include "scheduler.h"
 #include "djob.h"
 #include "jobs.h"
+#include "process.h"
 
 extern void console_print(const char* str);
 extern void itoa(uint64_t n, char* str);
@@ -187,6 +188,28 @@ namespace Cluster {
                 uint32_t task_count;
                 net_memcpy(&task_count, payload, 4);
                 DJob::update_node_load(src_ip, task_count);
+            }
+        }
+        else if (type == 0x10) { // MSG_PROC_SPAWN
+            if (payload_len >= 5) {
+                uint8_t proc_type = payload[0];
+                uint32_t remote_pid = 0;
+                net_memcpy(&remote_pid, payload + 1, 4);
+                Process::on_remote_spawn_request(src_ip, (Process::Type)proc_type, remote_pid);
+            }
+        }
+        else if (type == 0x11) { // MSG_PROC_SPAWNED
+            if (payload_len >= 8) {
+                uint32_t remote_pid = 0;
+                net_memcpy(&remote_pid, payload, 4);
+                Process::on_remote_spawned(remote_pid, src_ip);
+            }
+        }
+        else if (type == 0x12) { // MSG_PROC_KILL
+            if (payload_len >= 4) {
+                uint32_t pid = 0;
+                net_memcpy(&pid, payload, 4);
+                Process::on_remote_kill_request(pid);
             }
         }
     }

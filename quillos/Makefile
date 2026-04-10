@@ -32,7 +32,8 @@ KERNEL_OBJS = \
     build/e1000.o \
     build/network.o \
     build/cluster.o \
-    build/djob.o
+    build/djob.o \
+    build/process.o
 
 all: iso/kernel.elf
 

@@ -12,6 +12,7 @@
 #include "network.h"
 #include "cluster.h"
 #include "djob.h"
+#include "process.h"
 
 static volatile struct limine_framebuffer_request framebuffer_request = {
     .id = LIMINE_FRAMEBUFFER_REQUEST,
@@ -67,7 +68,10 @@ extern "C" void _start(void) {
     // 11. Distributed job scheduler
     DJob::init();
 
-    // 12. Shell
+    // 12. Process manager
+    Process::init();
+
+    // 13. Shell
     console_print("\n");
     shell_init();
 

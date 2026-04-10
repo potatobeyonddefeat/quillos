@@ -11,6 +11,7 @@
 #include "cluster.h"
 #include "djob.h"
 #include "jobs.h"
+#include "process.h"
 
 extern void console_print(const char* str);
 extern void console_clear();
@@ -155,6 +156,8 @@ void process_command(char* input) {
         kprint("\n  rjob <ip> <n1 n2..> - Send sum job to peer");
         kprint("\n  run <type> <args..> - Auto-schedule a job");
         kprint("\n  jobs              - Show job history");
+        kprint("\n  spawn <type>      - Start a process");
+        kprint("\n  procs             - List all processes");
         kprint("\n  intinfo       - Interrupt statistics");
         kprint("\n  heapinfo      - Heap allocator stats");
         kprint("\n  heaptest      - Test kmalloc/kfree");
@@ -437,31 +440,91 @@ void process_command(char* input) {
     }
     else if (safe_compare(cmd, "spawn")) {
         if (safe_strlen(arg) == 0) {
-            kprint("\nUsage: spawn <name>");
-            kprint("\n  Available: counter, busy, sleeper");
+            kprint("\nUsage: spawn <type> [node_ip_last]");
+            kprint("\n  Types: counter, stress, monitor, worker");
+            kprint("\n  Examples:");
+            kprint("\n    spawn counter       (auto-pick node)");
+            kprint("\n    spawn stress 2      (on 10.0.0.2)");
         } else {
-            kprint("\nSpawning not yet available from shell");
-            kprint("\n(Tasks are created programmatically for now)");
+            // Parse type and optional node
+            char type_str[16] = {0};
+            int j = 0;
+            while (arg[j] != ' ' && arg[j] != '\0' && j < 15) {
+                type_str[j] = arg[j]; j++;
+            }
+            type_str[j] = '\0';
+            while (arg[j] == ' ') j++;
+
+            uint32_t target_ip = 0;
+            if (arg[j] >= '0' && arg[j] <= '9') {
+                uint32_t last_octet = 0;
+                while (arg[j] >= '0' && arg[j] <= '9') {
+                    last_octet = last_octet * 10 + (uint32_t)(arg[j] - '0');
+                    j++;
+                }
+                target_ip = Network::htonl(0x0A000000 | last_octet);
+            }
+
+            if (Process::parse_type(type_str) == 0) {
+                kprint("\nUnknown type: "); kprint(type_str);
+            } else if (target_ip != 0) {
+                Process::spawn_on(type_str, target_ip);
+            } else {
+                Process::spawn(type_str);
+            }
         }
     }
     else if (safe_compare(cmd, "kill")) {
         if (safe_strlen(arg) == 0) {
-            kprint("\nUsage: kill <slot>");
+            kprint("\nUsage: kill <pid>");
         } else {
-            // Parse slot number
-            uint32_t slot = 0;
+            uint32_t pid = 0;
             int j = 0;
             while (arg[j] >= '0' && arg[j] <= '9') {
-                slot = slot * 10 + (arg[j] - '0');
+                pid = pid * 10 + (arg[j] - '0');
                 j++;
             }
-            if (Scheduler::kill_task(slot)) {
-                kprint("\nKilled task in slot ");
-                kprint(arg);
+            if (Process::kill(pid)) {
+                char buf[16];
+                kprint("\nKilled process pid=");
+                itoa(pid, buf); kprint(buf);
             } else {
-                kprint("\nCannot kill slot ");
-                kprint(arg);
-                kprint(" (invalid, kernel, idle, or already dead)");
+                kprint("\nCannot kill pid "); kprint(arg);
+                kprint(" (not found or not running)");
+            }
+        }
+    }
+    else if (safe_compare(cmd, "procs")) {
+        char buf[32];
+        uint32_t cnt = Process::count();
+        kprint("\nProcesses ("); itoa(cnt, buf); kprint(buf); kprint("):");
+        if (cnt == 0) {
+            kprint("\n  No processes running. Try 'spawn counter'.");
+        } else {
+            kprint("\n  PID  TYPE     STATE     NODE      TICKS  NAME");
+            for (uint32_t p = 0; p < cnt; p++) {
+                const Process::Info* pi = Process::get_by_index(p);
+                if (!pi) continue;
+                kprint("\n  ");
+                itoa(pi->pid, buf); kprint(buf);
+                kprint("    ");
+                kprint(Process::type_name(pi->type));
+                kprint("  ");
+                if (pi->state == Process::PROC_RUNNING)  kprint("  running ");
+                else if (pi->state == Process::PROC_SLEEPING) kprint("  sleeping");
+                else if (pi->state == Process::PROC_EXITING) kprint("  exiting ");
+                kprint("  ");
+                if (pi->node_ip == 0) {
+                    kprint("local     ");
+                } else {
+                    kprint("10.0.0.");
+                    uint32_t h = Network::ntohl(pi->node_ip) & 0xFF;
+                    itoa(h, buf); kprint(buf);
+                    kprint("  ");
+                }
+                itoa(pi->cpu_ticks, buf); kprint(buf);
+                kprint("  ");
+                kprint(pi->name);
             }
         }
     }
