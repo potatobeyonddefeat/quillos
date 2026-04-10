@@ -19,12 +19,15 @@
 
 extern isr_dispatch         ; C handler for CPU exceptions
 extern irq_dispatch         ; C handler for hardware IRQs (returns new RSP)
-extern sched_yield_dispatch ; C handler for INT 0x80 yield (returns new RSP)
+extern syscall_dispatch     ; C handler for INT 0x80 syscall (returns new RSP)
 
 global load_idt
 global context_switch
 global isr_stub_table
 global sched_yield_stub
+global gdt_flush
+global tss_flush
+global enter_usermode
 
 section .text
 
@@ -213,11 +216,15 @@ irq_common:
     iretq
 
 ; ============================================================
-; INT 0x80 — Scheduler yield (software interrupt)
+; INT 0x80 — System call / scheduler yield
 ;
-; Used by Scheduler::sleep_ms() and explicit yield.
-; Same register save/restore as irq_common, but calls
-; sched_yield_dispatch instead. No PIC EOI needed.
+; Dispatches by syscall number in RAX:
+;   0 = yield,  1 = exit,  2 = write,  3 = sleep, ...
+;
+; Callable from both ring 0 (kernel task yield/sleep) and ring 3
+; (userspace syscall). The IDT entry for 0x80 is DPL=3 so user
+; code can issue the interrupt. On ring 3 entry, the CPU switches
+; to TSS.rsp0 before pushing the exception frame.
 ; ============================================================
 
 sched_yield_stub:
@@ -242,7 +249,7 @@ sched_yield_stub:
 
     cld
     mov rdi, rsp                ; InterruptFrame*
-    call sched_yield_dispatch   ; Returns new RSP in rax
+    call syscall_dispatch       ; Returns new RSP in rax
     mov rsp, rax                ; Switch stacks
 
     pop r15
@@ -262,6 +269,87 @@ sched_yield_stub:
     pop rax
 
     add rsp, 16                 ; Remove int_no and error_code
+    iretq
+
+; ============================================================
+; gdt_flush — Load a new GDT and reload all segment registers
+;
+; void gdt_flush(GDTPointer* ptr, uint64_t kernel_cs, uint64_t kernel_ds)
+;   rdi = pointer to GDTPointer
+;   rsi = kernel code selector
+;   rdx = kernel data selector
+; ============================================================
+
+gdt_flush:
+    lgdt [rdi]
+
+    ; Reload data segment registers
+    mov ax, dx
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+
+    ; Reload CS via a far return. Build a (CS, RIP) pair on the
+    ; stack and retfq to it.
+    pop rax                     ; Grab our return address
+    push rsi                    ; Push new CS
+    push rax                    ; Push return RIP
+    retfq
+
+; ============================================================
+; tss_flush — Load the task register
+;
+; void tss_flush(uint16_t sel)
+;   di = selector (with RPL=0)
+; ============================================================
+
+tss_flush:
+    mov ax, di
+    ltr ax
+    ret
+
+; ============================================================
+; enter_usermode — iretq into a brand new user context
+;
+; void enter_usermode(uint64_t user_rip,
+;                     uint64_t user_rsp,
+;                     uint64_t user_cs,
+;                     uint64_t user_ss)
+;   rdi = RIP
+;   rsi = RSP
+;   rdx = CS
+;   rcx = SS
+;
+; Builds a synthetic iretq frame and drops to ring 3. Does not
+; return. Only used for the very first transition (or when the
+; scheduler doesn't yet own the task). Normal task scheduling
+; goes through the IRQ/syscall iretq path.
+; ============================================================
+
+enter_usermode:
+    cli
+    push rcx                    ; SS
+    push rsi                    ; RSP
+    push qword 0x202            ; RFLAGS with IF=1
+    push rdx                    ; CS
+    push rdi                    ; RIP
+    xor rax, rax
+    xor rbx, rbx
+    xor rcx, rcx
+    xor rdx, rdx
+    xor rsi, rsi
+    xor rdi, rdi
+    xor rbp, rbp
+    xor r8, r8
+    xor r9, r9
+    xor r10, r10
+    xor r11, r11
+    xor r12, r12
+    xor r13, r13
+    xor r14, r14
+    xor r15, r15
     iretq
 
 ; ============================================================

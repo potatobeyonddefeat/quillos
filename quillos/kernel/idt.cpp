@@ -1,6 +1,7 @@
 #include "idt.h"
 #include "io.h"
 #include "scheduler.h"
+#include "syscall.h"
 #include <stddef.h>
 
 extern void console_print(const char* str);
@@ -38,13 +39,13 @@ extern "C" void* isr_stub_table[];
 // Load IDT register
 extern "C" void load_idt(void* ptr);
 
-// INT 0x80 yield stub (defined in interrupts.asm)
+// INT 0x80 syscall stub (defined in interrupts.asm)
 extern "C" void sched_yield_stub();
 
 // C-callable dispatchers (called from assembly common handlers)
 extern "C" void isr_dispatch(InterruptFrame* frame);
 extern "C" uint64_t irq_dispatch(InterruptFrame* frame);
-extern "C" uint64_t sched_yield_dispatch(InterruptFrame* frame);
+extern "C" uint64_t syscall_dispatch(InterruptFrame* frame);
 
 // ============================================================
 // IRQ handler table + statistics
@@ -281,17 +282,16 @@ extern "C" uint64_t irq_dispatch(InterruptFrame* frame) {
         pic_send_eoi(irq);
 
         // Timer IRQ: let the scheduler potentially switch tasks.
-        // Returns the RSP to restore from (same or different task).
         if (irq == 0) {
-            return Scheduler::timer_tick((uint64_t)frame);
+            uint64_t new_rsp = Scheduler::timer_tick((uint64_t)frame);
+            // Apply per-task CR3 + TSS.rsp0 for whatever task is
+            // about to resume.
+            Scheduler::apply_task_context();
+            return new_rsp;
         }
     }
 
     return (uint64_t)frame;
-}
-
-extern "C" uint64_t sched_yield_dispatch(InterruptFrame* frame) {
-    return Scheduler::yield((uint64_t)frame);
 }
 
 // ============================================================
@@ -324,8 +324,9 @@ void idt_init() {
         set_idt_entry(32 + i, isr_stub_table[32 + i], 0x8E);
     }
 
-    // 4. Install scheduler yield interrupt (INT 0x80)
-    set_idt_entry(0x80, (void*)sched_yield_stub, 0x8E);
+    // 4. Install system call / yield interrupt (INT 0x80) with DPL=3
+    //    so user code can invoke it (0xEE = P=1, DPL=3, type=0xE)
+    set_idt_entry(0x80, (void*)sched_yield_stub, 0xEE);
 
     // 5. Load IDT
     idt_ptr.limit = sizeof(idt) - 1;

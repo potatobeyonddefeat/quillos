@@ -2,9 +2,11 @@
 #include <stddef.h>
 #include "limine.h"
 #include "console.h"
+#include "gdt.h"
 #include "idt.h"
 #include "shell.h"
 #include "memory.h"
+#include "vmm.h"
 #include "scheduler.h"
 #include "pci.h"
 #include "disk.h"
@@ -37,27 +39,34 @@ extern "C" void _start(void) {
     console_init((uint32_t*)fb->address, fb->pitch);
     console_print("QuillOS v0.1 booting...");
 
-    // 1. IDT + PIC
+    // 1. GDT with user segments and TSS (must come before the
+    //    IDT so int 0x80 can be installed as a DPL=3 gate)
+    GDT::init();
+
+    // 2. IDT + PIC
     idt_init();
     console_print("\n[OK] IDT + PIC initialized (32 ISRs, 16 IRQs)");
 
-    // 2. Timer
+    // 3. Timer
     init_pit();
     console_print("\n[OK] PIT timer at ~1000 Hz (IRQ 0)");
 
-    // 3. Keyboard
+    // 4. Keyboard
     keyboard_init();
     Mouse::init();
     Serial::init();
     console_print("\n[OK] Keyboard driver (IRQ 1)");
 
-    // 4. CPU info (CPUID)
+    // 5. CPU info (CPUID)
     CPU::init();
 
-    // 5. Memory manager (PMM + heap)
+    // 6. Memory manager (PMM + heap)
     Memory::init();
 
-    // 5. Scheduler (preemptive, needed before cluster tasks)
+    // 7. VMM (captures kernel PML4 for later user address spaces)
+    VMM::init();
+
+    // 8. Scheduler (preemptive, needed before cluster tasks)
     Scheduler::init();
 
     // 6. PCI bus

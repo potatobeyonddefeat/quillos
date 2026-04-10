@@ -12,6 +12,7 @@
 #include "djob.h"
 #include "jobs.h"
 #include "process.h"
+#include "userprog.h"
 #include "users.h"
 #include "cpu.h"
 #include "mouse.h"
@@ -278,6 +279,8 @@ void process_command(char* input) {
         kprint("\n  jobs              - Show job history");
         kprint("\n  spawn <type>      - Start a process");
         kprint("\n  procs             - List all processes");
+        kprint("\n  user <prog>       - Run a ring-3 user program");
+        kprint("\n                      (prog = hello | ticker | forker)");
         kprint("\n  specs             - Show system specifications");
         kprint("\n  whoami            - Show current user");
         kprint("\n  logout            - Log out current user");
@@ -601,6 +604,33 @@ void process_command(char* input) {
                 Process::spawn_on(type_str, target_ip);
             } else {
                 Process::spawn(type_str);
+            }
+        }
+    }
+    else if (safe_compare(cmd, "user")) {
+        if (safe_strlen(arg) == 0) {
+            kprint("\nUsage: user <prog>");
+            kprint("\n  Programs: hello, ticker, forker");
+        } else {
+            uint32_t pid = 0;
+            if (safe_compare(arg, "hello")) {
+                pid = UserProg::spawn_hello();
+            } else if (safe_compare(arg, "ticker")) {
+                pid = UserProg::spawn_ticker();
+            } else if (safe_compare(arg, "forker")) {
+                pid = UserProg::spawn_forker();
+            } else {
+                kprint("\nUnknown program: "); kprint(arg);
+                goto done;
+            }
+            if (pid == 0) {
+                kprint("\nFailed to spawn user program");
+            } else {
+                char buf[16];
+                kprint("\nLaunched user program '");
+                kprint(arg);
+                kprint("' as pid ");
+                itoa(pid, buf); kprint(buf);
             }
         }
     }

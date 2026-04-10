@@ -18,6 +18,7 @@ KERNEL_OBJS = \
     build/kernel.o \
     build/font.o \
     build/console.o \
+    build/gdt.o \
     build/idt.o \
     build/keyboard.o \
     build/interrupts.o \
@@ -26,7 +27,11 @@ KERNEL_OBJS = \
     build/utils.o \
     build/filesystem.o \
     build/memory.o \
+    build/vmm.o \
     build/scheduler.o \
+    build/syscall.o \
+    build/elf.o \
+    build/userprog.o \
     build/pci.o \
     build/disk.o \
     build/e1000.o \

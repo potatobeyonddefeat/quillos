@@ -1,6 +1,8 @@
 #pragma once
 #include <stdint.h>
 
+struct InterruptFrame;
+
 // ================================================================
 // Distributed Process Manager
 //
@@ -11,6 +13,9 @@
 // Each process maps to a local scheduler task on whichever
 // node it's running on. The process table tracks ALL processes
 // across the cluster (local + remote).
+//
+// User processes (TYPE_USER) run in ring 3 with their own
+// address space and talk to the kernel via int 0x80 syscalls.
 // ================================================================
 
 namespace Process {
@@ -28,6 +33,7 @@ namespace Process {
         TYPE_STRESS   = 2,  // CPU stress loop
         TYPE_MONITOR  = 3,  // Periodic system stats
         TYPE_WORKER   = 4,  // Idle worker waiting for jobs
+        TYPE_USER     = 5,  // Ring-3 user process (ELF or embedded blob)
     };
 
     struct Info {
@@ -40,6 +46,8 @@ namespace Process {
         uint64_t started_at;
         uint64_t cpu_ticks;
         int32_t  sched_slot;   // Local scheduler task slot (-1 if remote)
+        uint64_t cr3;          // User address space (0 for kernel procs)
+        int32_t  exit_status;  // Set when state becomes PROC_DEAD
     };
 
     static constexpr uint32_t MAX_PROCS = 16;
@@ -51,6 +59,21 @@ namespace Process {
 
     // Spawn on a specific node (0 = local)
     uint32_t spawn_on(const char* type_name, uint32_t node_ip);
+
+    // Load + run a user program from an in-memory ELF64 image.
+    // Returns the new pid or 0 on failure. Runs locally.
+    uint32_t spawn_user_elf(const char* name,
+                            const void* elf_bytes,
+                            uint64_t elf_len);
+
+    // Load + run a user program from a raw machine-code blob.
+    // The blob is loaded at `load_addr` (defaults to 0x400000)
+    // and execution starts at that same address. Useful for
+    // tiny hand-assembled test programs without an ELF header.
+    uint32_t spawn_user_blob(const char* name,
+                             const void* code,
+                             uint64_t code_len,
+                             uint64_t load_addr);
 
     // Kill by PID (works for local and remote)
     bool kill(uint32_t pid);
@@ -73,4 +96,22 @@ namespace Process {
 
     // Background: reports local process status to peers
     void status_report_entry();
+
+    // ----------------------------------------------------------
+    // Syscall entry points (called from Syscall::dispatch)
+    //
+    // Return new RSP where useful (sleep/exit), otherwise return
+    // a scalar result and let the caller stuff it into frame->rax.
+    // ----------------------------------------------------------
+    uint64_t sys_write(int fd, const char* buf, uint64_t len);
+    uint64_t sys_read(int fd, char* buf, uint64_t len);
+    int32_t  sys_getpid();
+    uint64_t sys_exit(int32_t status, InterruptFrame* frame);
+    uint64_t sys_sleep_ms(uint32_t ms, InterruptFrame* frame);
+    int32_t  sys_fork(InterruptFrame* parent_frame);
+    int32_t  sys_exec(const char* path, InterruptFrame* frame);
+
+    // Lookup helper: which proc slot owns the currently-running
+    // scheduler task? Returns -1 if none.
+    int current_slot();
 }
