@@ -1,6 +1,8 @@
 #include "cluster.h"
 #include "network.h"
 #include "scheduler.h"
+#include "djob.h"
+#include "jobs.h"
 
 extern void console_print(const char* str);
 extern void itoa(uint64_t n, char* str);
@@ -13,6 +15,7 @@ namespace Cluster {
     static constexpr uint8_t MSG_DISCOVER_ACK = 0x02;
     static constexpr uint8_t MSG_JOB_SUBMIT   = 0x03;
     static constexpr uint8_t MSG_JOB_RESULT   = 0x04;
+    static constexpr uint8_t MSG_LOAD_REPORT  = 0x05;
 
     // Message header (over UDP payload)
     struct Message {
@@ -89,7 +92,7 @@ namespace Cluster {
     // ================================================================
 
     static void execute_job(uint32_t src_ip, const uint8_t* data, uint16_t len) {
-        if (len < 5) return; // job_id(4) + type(1) minimum
+        if (len < 5) return;
 
         uint32_t job_id;
         net_memcpy(&job_id, data, 4);
@@ -97,30 +100,21 @@ namespace Cluster {
         const uint8_t* job_data = data + 5;
         uint16_t job_len = len - 5;
 
-        uint32_t result = 0;
+        // Use shared job execution engine
+        uint32_t result = Jobs::execute((Jobs::Type)job_type, job_data, job_len);
 
-        if (job_type == JOB_SUM) {
-            // Sum array of uint32_t
-            uint32_t count = job_len / 4;
-            for (uint32_t i = 0; i < count; i++) {
-                uint32_t val;
-                net_memcpy(&val, job_data + i * 4, 4);
-                result += val;
-            }
-            console_print("\n[CLUSTER] Computed sum job: ");
-            char buf[16];
-            itoa(result, buf);
-            console_print(buf);
-        } else if (job_type == JOB_ECHO) {
-            // Just echo — result is the length
-            result = job_len;
-        }
+        console_print("\n[CLUSTER] Ran remote ");
+        console_print(Jobs::type_name((Jobs::Type)job_type));
+        console_print(" job = ");
+        char buf[16];
+        itoa(result, buf);
+        console_print(buf);
 
         // Send result back
         uint8_t reply[12];
         reply[0] = MSG_JOB_RESULT;
         reply[1] = 0;
-        reply[2] = 8; reply[3] = 0; // payload_len = 8
+        reply[2] = 8; reply[3] = 0;
         net_memcpy(reply + 4, &job_id, 4);
         net_memcpy(reply + 8, &result, 4);
 
@@ -170,14 +164,29 @@ namespace Cluster {
         }
         else if (type == MSG_JOB_RESULT) {
             if (payload_len >= 8) {
-                net_memcpy(&last_result.job_id, payload, 4);
-                net_memcpy(&last_result.result, payload + 4, 4);
+                uint32_t rid, rval;
+                net_memcpy(&rid, payload, 4);
+                net_memcpy(&rval, payload + 4, 4);
+
+                last_result.job_id = rid;
+                last_result.result = rval;
                 last_result.completed = true;
 
-                console_print("\n[CLUSTER] Job result received: ");
+                // Route to distributed job scheduler
+                DJob::on_remote_result(rid, rval);
+
+                console_print("\n[CLUSTER] Result for job ");
                 char buf[16];
-                itoa(last_result.result, buf);
-                console_print(buf);
+                itoa(rid, buf); console_print(buf);
+                console_print(": ");
+                itoa(rval, buf); console_print(buf);
+            }
+        }
+        else if (type == MSG_LOAD_REPORT) {
+            if (payload_len >= 4) {
+                uint32_t task_count;
+                net_memcpy(&task_count, payload, 4);
+                DJob::update_node_load(src_ip, task_count);
             }
         }
     }
@@ -193,18 +202,37 @@ namespace Cluster {
         }
     }
 
+    // Send our load metrics to all peers
+    static void send_load_report() {
+        if (!initialized || peer_count == 0) return;
+
+        uint32_t load = Scheduler::get_count();
+        uint8_t msg[8];
+        msg[0] = MSG_LOAD_REPORT;
+        msg[1] = 0;
+        msg[2] = 4; msg[3] = 0; // payload_len = 4
+        net_memcpy(msg + 4, &load, 4);
+
+        // Send to each known peer
+        for (uint32_t i = 0; i < MAX_NODES; i++) {
+            if (peers[i].active) {
+                Network::send_udp(peers[i].ip, CLUSTER_PORT, CLUSTER_PORT, msg, 8);
+            }
+        }
+    }
+
     void heartbeat_task_entry() {
-        // Wait a moment for system to settle
         Scheduler::sleep_ms(500);
 
         while (true) {
             send_discover();
+            send_load_report();
 
-            // Expire stale peers (not seen in 10 seconds)
+            // Expire stale peers
             for (uint32_t i = 0; i < MAX_NODES; i++) {
                 if (peers[i].active && (ticks - peers[i].last_seen) > 10000) {
                     peers[i].active = false;
-                    peer_count--;
+                    if (peer_count > 0) peer_count--;
                 }
             }
 

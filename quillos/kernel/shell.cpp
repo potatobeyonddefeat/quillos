@@ -9,6 +9,8 @@
 #include "e1000.h"
 #include "network.h"
 #include "cluster.h"
+#include "djob.h"
+#include "jobs.h"
 
 extern void console_print(const char* str);
 extern void console_clear();
@@ -151,6 +153,8 @@ void process_command(char* input) {
         kprint("\n  peers         - List cluster peers");
         kprint("\n  cluster       - Cluster overview");
         kprint("\n  rjob <ip> <n1 n2..> - Send sum job to peer");
+        kprint("\n  run <type> <args..> - Auto-schedule a job");
+        kprint("\n  jobs              - Show job history");
         kprint("\n  intinfo       - Interrupt statistics");
         kprint("\n  heapinfo      - Heap allocator stats");
         kprint("\n  heaptest      - Test kmalloc/kfree");
@@ -682,6 +686,91 @@ void process_command(char* input) {
                 }
             }
         }
+    }
+    else if (safe_compare(cmd, "run")) {
+        // Usage: run <type> <args...>
+        // Types: sum, product, max, prime, echo
+        if (safe_strlen(arg) == 0) {
+            kprint("\nUsage: run <type> <args...>");
+            kprint("\n  run sum 10 20 30      -> compute sum");
+            kprint("\n  run product 2 3 7     -> compute product");
+            kprint("\n  run max 5 99 12       -> find maximum");
+            kprint("\n  run prime 1000        -> count primes up to N");
+            kprint("\nScheduler auto-picks local or remote node.");
+        } else {
+            // Parse type name
+            char type_str[16] = {0};
+            int j = 0;
+            while (arg[j] != ' ' && arg[j] != '\0' && j < 15) {
+                type_str[j] = arg[j]; j++;
+            }
+            type_str[j] = '\0';
+            while (arg[j] == ' ') j++;
+
+            Jobs::Type jtype = Jobs::JOB_ECHO;
+            if (safe_compare(type_str, "sum"))     jtype = Jobs::JOB_SUM;
+            else if (safe_compare(type_str, "product")) jtype = Jobs::JOB_PRODUCT;
+            else if (safe_compare(type_str, "max"))     jtype = Jobs::JOB_MAX;
+            else if (safe_compare(type_str, "prime"))   jtype = Jobs::JOB_PRIME;
+            else if (safe_compare(type_str, "echo"))    jtype = Jobs::JOB_ECHO;
+            else {
+                kprint("\nUnknown job type: "); kprint(type_str);
+                kprint("\nTry: sum, product, max, prime, echo");
+                goto run_done;
+            }
+
+            // Parse numbers
+            uint32_t numbers[32];
+            int num_count = 0;
+            while (arg[j] && num_count < 32) {
+                uint32_t val = 0;
+                bool has_digit = false;
+                while (arg[j] >= '0' && arg[j] <= '9') {
+                    val = val * 10 + (uint32_t)(arg[j] - '0');
+                    j++; has_digit = true;
+                }
+                if (has_digit) numbers[num_count++] = val;
+                while (arg[j] == ' ') j++;
+            }
+
+            if (num_count == 0) {
+                kprint("\nNo arguments provided");
+            } else {
+                DJob::submit(jtype, (const uint8_t*)numbers, (uint16_t)(num_count * 4));
+            }
+        }
+    run_done: (void)0;
+    }
+    else if (safe_compare(cmd, "jobs")) {
+        char buf[32];
+        uint32_t count = DJob::get_history_count();
+        kprint("\nJob History ("); itoa(count, buf); kprint(buf); kprint("):");
+        kprint("\n  ID  TYPE     STATUS     WHERE    RESULT");
+        for (uint32_t j = 0; j < count; j++) {
+            const Jobs::Job* job = DJob::get_history(j);
+            if (!job || job->id == 0) continue;
+            kprint("\n  ");
+            itoa(job->id, buf); kprint(buf);
+            kprint("   ");
+            kprint(Jobs::type_name(job->type));
+            kprint("  ");
+            if (job->status == Jobs::STATUS_PENDING)   kprint("  pending  ");
+            else if (job->status == Jobs::STATUS_RUNNING)   kprint("  running  ");
+            else if (job->status == Jobs::STATUS_COMPLETED) kprint("  done     ");
+            else if (job->status == Jobs::STATUS_FAILED)    kprint("  FAILED   ");
+            if (job->target_ip == 0) {
+                kprint("  local    ");
+            } else {
+                kprint("  10.0.0.");
+                uint32_t h = Network::ntohl(job->target_ip) & 0xFF;
+                itoa(h, buf); kprint(buf);
+                kprint("  ");
+            }
+            if (job->status == Jobs::STATUS_COMPLETED) {
+                itoa(job->result, buf); kprint(buf);
+            }
+        }
+        kprint("\n  Local load: "); itoa(DJob::get_local_load(), buf); kprint(buf); kprint(" tasks");
     }
     else if (safe_compare(cmd, "intinfo")) {
         char buf[32];

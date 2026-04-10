@@ -11,6 +11,7 @@
 #include "e1000.h"
 #include "network.h"
 #include "cluster.h"
+#include "djob.h"
 
 static volatile struct limine_framebuffer_request framebuffer_request = {
     .id = LIMINE_FRAMEBUFFER_REQUEST,
@@ -63,7 +64,10 @@ extern "C" void _start(void) {
     // 10. Cluster system (discovery + job dispatch, starts background tasks)
     Cluster::init();
 
-    // 11. Shell
+    // 11. Distributed job scheduler
+    DJob::init();
+
+    // 12. Shell
     console_print("\n");
     shell_init();
 
