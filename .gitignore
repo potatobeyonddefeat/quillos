@@ -3,5 +3,9 @@ quillos/build/*.o
 quillos/iso/kernel.elf
 quillos/quillos.iso
 
+# Test disk image
+quillos/test_disk.img
+
 # Limine built binary
 quillos/limine/limine
+quillos/limine/limine.dSYM/
