@@ -64,10 +64,39 @@ void console_backspace() {
     draw_rect(cursor_x, cursor_y, CHAR_W, CHAR_H, current_bg_color);
 }
 
+// Scroll the framebuffer up by one line (CHAR_H + 4 pixels).
+// Copy rows [line_h .. SCREEN_HEIGHT] up to [0 .. SCREEN_HEIGHT - line_h],
+// then clear the bottom line with the current background color.
+static void console_scroll() {
+    const int line_h = CHAR_H + 4;
+    const int shift_rows = SCREEN_HEIGHT - line_h;
+
+    for (int y = 0; y < shift_rows; y++) {
+        uint32_t* dst = framebuffer + y * pitch;
+        uint32_t* src = framebuffer + (y + line_h) * pitch;
+        for (uint64_t x = 0; x < pitch; x++) {
+            dst[x] = src[x];
+        }
+    }
+    // Clear the bottom line
+    for (int y = shift_rows; y < SCREEN_HEIGHT; y++) {
+        uint32_t* row = framebuffer + y * pitch;
+        for (uint64_t x = 0; x < pitch; x++) {
+            row[x] = current_bg_color;
+        }
+    }
+    cursor_y -= line_h;
+    if (cursor_y < 10) cursor_y = 10;
+}
+
 void console_putc(char c) {
     if (c == '\n') {
         cursor_x = 10;
         cursor_y += CHAR_H + 4;
+        // Scroll if we've run past the bottom
+        if (cursor_y + CHAR_H > SCREEN_HEIGHT - 10) {
+            console_scroll();
+        }
     } else if (c == '\b') {
         console_backspace();
     } else {

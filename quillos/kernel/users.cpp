@@ -1,6 +1,11 @@
 #include "users.h"
+#include "disk.h"
 
 extern void console_print(const char* str);
+
+// Persistent user storage on disk sector 100
+static constexpr uint32_t USER_MAGIC  = 0x53524551;  // "QERS"
+static constexpr uint32_t USER_SECTOR = 100;
 
 namespace Users {
 
@@ -22,6 +27,58 @@ namespace Users {
         dst[i] = '\0';
     }
 
+    static void mem_copy(void* dst, const void* src, uint64_t n) {
+        uint8_t* d = (uint8_t*)dst;
+        const uint8_t* s = (const uint8_t*)src;
+        for (uint64_t i = 0; i < n; i++) d[i] = s[i];
+    }
+
+    static void mem_zero(void* dst, uint64_t n) {
+        uint8_t* d = (uint8_t*)dst;
+        for (uint64_t i = 0; i < n; i++) d[i] = 0;
+    }
+
+    // Load user table from disk sector USER_SECTOR.
+    // Returns true if valid data was loaded.
+    static bool load_from_disk() {
+        if (!Disk::is_present()) return false;
+        uint8_t sector[512];
+        if (!Disk::read_sector(USER_SECTOR, sector)) return false;
+
+        uint32_t magic = 0;
+        mem_copy(&magic, sector, 4);
+        if (magic != USER_MAGIC) return false;
+
+        // Version check (reserved for future use)
+        uint32_t version = 0;
+        mem_copy(&version, sector + 4, 4);
+        if (version != 1) return false;
+
+        // Copy user entries
+        uint64_t total_size = sizeof(User) * MAX_USERS;
+        if (total_size > 512 - 8) total_size = 512 - 8;
+        mem_copy(users, sector + 8, total_size);
+        return true;
+    }
+
+    // Save user table to disk sector USER_SECTOR.
+    static bool save_to_disk() {
+        if (!Disk::is_present()) return false;
+        uint8_t sector[512];
+        mem_zero(sector, 512);
+
+        uint32_t magic = USER_MAGIC;
+        uint32_t version = 1;
+        mem_copy(sector, &magic, 4);
+        mem_copy(sector + 4, &version, 4);
+
+        uint64_t total_size = sizeof(User) * MAX_USERS;
+        if (total_size > 512 - 8) total_size = 512 - 8;
+        mem_copy(sector + 8, users, total_size);
+
+        return Disk::write_sector(USER_SECTOR, sector);
+    }
+
     bool init() {
         for (uint32_t i = 0; i < MAX_USERS; i++) {
             users[i].active = false;
@@ -31,8 +88,31 @@ namespace Users {
             users[i].onboarded = false;
         }
         current_user = nullptr;
-        console_print("\n[USERS] User system ready");
+
+        // Try loading existing users from disk
+        if (load_from_disk()) {
+            console_print("\n[USERS] Loaded user table from disk (");
+            char buf[8];
+            uint32_t n = count();
+            // inline itoa
+            int i = 0;
+            if (n == 0) buf[i++] = '0';
+            char tmp[8]; int t = 0;
+            uint32_t nn = n;
+            while (nn > 0) { tmp[t++] = '0' + (nn % 10); nn /= 10; }
+            while (t > 0) buf[i++] = tmp[--t];
+            buf[i] = '\0';
+            console_print(buf);
+            console_print(" users)");
+        } else {
+            console_print("\n[USERS] User system ready (no saved users)");
+        }
         return true;
+    }
+
+    // Public: force persist current table (called after updates)
+    void persist() {
+        save_to_disk();
     }
 
     // FNV-1a 64-bit hash — simple but sufficient for a hobby OS
@@ -56,6 +136,7 @@ namespace Users {
                 users[i].usecase = USECASE_NONE;
                 users[i].onboarded = false;
                 users[i].active = true;
+                save_to_disk();  // Persist to disk
                 return true;
             }
         }
@@ -102,11 +183,17 @@ namespace Users {
     void clear_current() { current_user = nullptr; }
 
     void set_usecase(User* u, UseCase uc) {
-        if (u) u->usecase = uc;
+        if (u) {
+            u->usecase = uc;
+            save_to_disk();
+        }
     }
 
     void complete_onboarding(User* u) {
-        if (u) u->onboarded = true;
+        if (u) {
+            u->onboarded = true;
+            save_to_disk();
+        }
     }
 
     const char* usecase_name(UseCase uc) {

@@ -55,8 +55,14 @@ enum ShellMode {
     MODE_ONBOARD_PACKAGES,  // Install packages? y/n
     MODE_LOGIN_USER,        // Existing user: username
     MODE_LOGIN_PASS,        // Existing user: password
+    MODE_EDIT,              // Editing a file
     MODE_SHELL,             // Normal shell commands
 };
+
+// Editor state
+static char edit_filename[64] = {0};
+static char edit_buf[1024] = {0};
+static int  edit_len = 0;
 
 static ShellMode shell_mode = MODE_SIGNUP_USER;
 static char pending_username[32] = {0};
@@ -250,6 +256,7 @@ void process_command(char* input) {
         kprint("\n  touch <name>  - Create file");
         kprint("\n  cat <name>    - Read file");
         kprint("\n  write <name> <text> - Write to file");
+        kprint("\n  nano <name>   - Edit a text file");
         kprint("\n  rm <name>     - Remove file/dir");
         kprint("\n  pwd           - Print working dir");
         kprint("\n  cd <path>     - Change directory");
@@ -970,6 +977,38 @@ void process_command(char* input) {
             }
         }
     }
+    else if (safe_compare(cmd, "nano")) {
+        if (safe_strlen(arg) == 0) {
+            kprint("\nUsage: nano <filename>");
+        } else {
+            // Load existing file contents (if any)
+            char path[QuillFS::MAX_PATH_LEN] = {0};
+            build_path(arg, path);
+            safe_strcpy(edit_filename, path);
+
+            for (int i = 0; i < 1024; i++) edit_buf[i] = 0;
+            edit_len = 0;
+
+            char contents[QuillFS::MAX_FILE_DATA] = {0};
+            if (g_fs.read_file(path, contents, sizeof(contents))) {
+                int i = 0;
+                while (contents[i] && edit_len < 1023) {
+                    edit_buf[edit_len++] = contents[i++];
+                }
+            }
+
+            kprint("\n-- nano: ");
+            kprint(arg);
+            kprint(" --");
+            kprint("\n(Type text. Enter for newline. Type ':wq' on its own line to save & exit, ':q' to quit.)");
+            kprint("\n");
+            // Show existing contents
+            for (int i = 0; i < edit_len; i++) console_putc(edit_buf[i]);
+
+            shell_mode = MODE_EDIT;
+            return; // Don't show normal prompt
+        }
+    }
     else if (safe_compare(cmd, "specs")) {
         char buf[32];
         const CPU::Info* ci = CPU::get_info();
@@ -1211,6 +1250,37 @@ static void handle_line(char* line) {
             } else {
                 enter_shell_mode();
             }
+            return;
+        }
+        case MODE_EDIT: {
+            // Check for save/quit commands
+            if (safe_compare(line, ":wq") || safe_compare(line, ":w")) {
+                edit_buf[edit_len] = '\0';
+                if (g_fs.write_file(edit_filename, edit_buf)) {
+                    kprint("\nSaved: ");
+                    kprint(edit_filename);
+                } else {
+                    kprint("\nFailed to save");
+                }
+                if (safe_compare(line, ":wq")) {
+                    shell_mode = MODE_SHELL;
+                    show_prompt();
+                }
+                return;
+            }
+            if (safe_compare(line, ":q") || safe_compare(line, ":q!")) {
+                kprint("\nExited without saving");
+                shell_mode = MODE_SHELL;
+                show_prompt();
+                return;
+            }
+            // Append the line + newline to the edit buffer
+            int i = 0;
+            while (line[i] && edit_len < 1023) {
+                edit_buf[edit_len++] = line[i++];
+            }
+            if (edit_len < 1023) edit_buf[edit_len++] = '\n';
+            // Newline is already echoed by shell_update on Enter
             return;
         }
         case MODE_SHELL: {
