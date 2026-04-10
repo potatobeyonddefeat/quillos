@@ -8,6 +8,7 @@
 #include "scheduler.h"
 #include "pci.h"
 #include "disk.h"
+#include "e1000.h"
 #include "network.h"
 #include "cluster.h"
 
@@ -17,7 +18,6 @@ static volatile struct limine_framebuffer_request framebuffer_request = {
     .response = NULL
 };
 
-// Defined in timer.cpp and keyboard.cpp
 extern "C" void init_pit();
 extern void keyboard_init();
 
@@ -30,37 +30,40 @@ extern "C" void _start(void) {
     console_init((uint32_t*)fb->address, fb->pitch);
     console_print("QuillOS v0.1 booting...");
 
-    // 1. IDT + PIC — must be first so IRQ registration works
+    // 1. IDT + PIC
     idt_init();
     console_print("\n[OK] IDT + PIC initialized (32 ISRs, 16 IRQs)");
 
-    // 2. Timer — registers IRQ 0 handler + unmasks it
+    // 2. Timer
     init_pit();
     console_print("\n[OK] PIT timer at ~1000 Hz (IRQ 0)");
 
-    // 3. Keyboard — registers IRQ 1 handler + unmasks it
+    // 3. Keyboard
     keyboard_init();
     console_print("\n[OK] Keyboard driver (IRQ 1)");
 
-    // 4. Memory manager
+    // 4. Memory manager (PMM + heap)
     Memory::init();
 
-    // 5. Scheduler
+    // 5. Scheduler (preemptive, needed before cluster tasks)
     Scheduler::init();
 
-    // 6. PCI bus enumeration
+    // 6. PCI bus
     PCI::init();
 
     // 7. Disk driver (ATA PIO)
     Disk::init();
 
-    // 8. Network stack
+    // 8. E1000 NIC driver (hardware init, DMA setup)
+    E1000::init();
+
+    // 9. Network protocol stack (Ethernet, ARP, IPv4, UDP)
     Network::init();
 
-    // 9. Cluster system
+    // 10. Cluster system (discovery + job dispatch, starts background tasks)
     Cluster::init();
 
-    // 10. Shell (also inits filesystem)
+    // 11. Shell
     console_print("\n");
     shell_init();
 

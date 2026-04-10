@@ -14,4 +14,6 @@ namespace PCI {
     const Device* get_device(uint32_t idx);
     const Device* find_device(uint8_t class_code, uint8_t subclass);
     uint32_t config_read(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offset);
+    void     config_write(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offset, uint32_t value);
+    void     enable_bus_mastering(uint8_t bus, uint8_t dev, uint8_t func);
 }

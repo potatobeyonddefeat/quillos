@@ -29,6 +29,7 @@ KERNEL_OBJS = \
     build/scheduler.o \
     build/pci.o \
     build/disk.o \
+    build/e1000.o \
     build/network.o \
     build/cluster.o
 

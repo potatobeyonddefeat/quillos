@@ -63,6 +63,22 @@ namespace PCI {
         return idx < device_count ? &devices[idx] : nullptr;
     }
 
+    void config_write(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offset, uint32_t value) {
+        uint32_t addr = (1u << 31)
+            | ((uint32_t)bus << 16)
+            | ((uint32_t)dev << 11)
+            | ((uint32_t)func << 8)
+            | (offset & 0xFC);
+        outl(0xCF8, addr);
+        outl(0xCFC, value);
+    }
+
+    void enable_bus_mastering(uint8_t bus, uint8_t dev, uint8_t func) {
+        uint32_t cmd = config_read(bus, dev, func, 0x04);
+        cmd |= (1 << 2) | (1 << 0); // Bus master + I/O space
+        config_write(bus, dev, func, 0x04, cmd);
+    }
+
     const Device* find_device(uint8_t class_code, uint8_t subclass) {
         for (uint32_t i = 0; i < device_count; i++) {
             if (devices[i].class_code == class_code && devices[i].subclass == subclass)

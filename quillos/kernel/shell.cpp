@@ -6,6 +6,7 @@
 #include "scheduler.h"
 #include "pci.h"
 #include "disk.h"
+#include "e1000.h"
 #include "network.h"
 #include "cluster.h"
 
@@ -145,8 +146,11 @@ void process_command(char* input) {
         kprint("\n  diskinfo      - Disk drive info");
         kprint("\n  readsec <lba> - Read sector as ASCII");
         kprint("\n  hexdump <lba> - Hex dump a sector");
-        kprint("\n  netinfo       - Network status");
-        kprint("\n  cluster       - Cluster status");
+        kprint("\n  netinfo       - Network/NIC status");
+        kprint("\n  discover      - Broadcast cluster discovery");
+        kprint("\n  peers         - List cluster peers");
+        kprint("\n  cluster       - Cluster overview");
+        kprint("\n  rjob <ip> <n1 n2..> - Send sum job to peer");
         kprint("\n  intinfo       - Interrupt statistics");
         kprint("\n  heapinfo      - Heap allocator stats");
         kprint("\n  heaptest      - Test kmalloc/kfree");
@@ -570,41 +574,113 @@ void process_command(char* input) {
     else if (safe_compare(cmd, "netinfo")) {
         if (Network::is_present()) {
             char buf[32];
-            kprint("\nNetwork: NIC present");
-            uint32_t ip = Network::get_ip();
-            kprint("\n  IP: ");
-            itoa((ip >> 24) & 0xFF, buf); kprint(buf); kprint(".");
-            itoa((ip >> 16) & 0xFF, buf); kprint(buf); kprint(".");
-            itoa((ip >> 8) & 0xFF, buf); kprint(buf); kprint(".");
-            itoa(ip & 0xFF, buf); kprint(buf);
-            const Network::MACAddress* mac = Network::get_mac();
-            kprint("\n  MAC: ");
+            kprint("\nNetwork (E1000 NIC):");
+            uint32_t ip_n = Network::get_ip();
+            uint32_t ip_h = Network::ntohl(ip_n);
+            kprint("\n  IP:   ");
+            itoa((ip_h >> 24) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa((ip_h >> 16) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa((ip_h >> 8) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa(ip_h & 0xFF, buf); kprint(buf);
+            const uint8_t* mac = Network::get_mac();
+            kprint("\n  MAC:  ");
+            const char* hex = "0123456789ABCDEF";
             for (int m = 0; m < 6; m++) {
-                itoa(mac->bytes[m], buf); kprint(buf);
-                if (m < 5) kprint(":");
+                char h[4]; h[0] = hex[mac[m]>>4]; h[1] = hex[mac[m]&0xF];
+                h[2] = (m < 5) ? ':' : '\0'; h[3] = '\0';
+                kprint(h);
             }
+            kprint("\n  Sent: "); itoa(Network::get_packets_sent(), buf); kprint(buf);
+            kprint("\n  Recv: "); itoa(Network::get_packets_received(), buf); kprint(buf);
         } else {
-            kprint("\nNetwork: No NIC detected");
+            kprint("\nNetwork: Not available");
         }
+    }
+    else if (safe_compare(cmd, "peers")) {
+        char buf[32];
+        uint32_t cnt = Cluster::get_peer_count();
+        kprint("\nCluster peers ("); itoa(cnt, buf); kprint(buf); kprint("):");
+        if (cnt == 0) {
+            kprint("\n  No peers discovered yet. Try 'discover'.");
+        }
+        for (uint32_t p = 0; p < cnt; p++) {
+            const Cluster::Node* peer = Cluster::get_peer(p);
+            if (!peer) continue;
+            kprint("\n  "); kprint(peer->name); kprint("  ");
+            uint32_t ip_h = Network::ntohl(peer->ip);
+            itoa((ip_h >> 24) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa((ip_h >> 16) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa((ip_h >> 8) & 0xFF, buf); kprint(buf); kprint(".");
+            itoa(ip_h & 0xFF, buf); kprint(buf);
+        }
+    }
+    else if (safe_compare(cmd, "discover")) {
+        Cluster::send_discover();
+        kprint("\nDiscovery broadcast sent. Use 'peers' to see results.");
     }
     else if (safe_compare(cmd, "cluster")) {
         char buf[32];
-        kprint("\nCluster ("); itoa(Cluster::get_count(), buf); kprint(buf); kprint(" nodes):");
-        for (uint32_t n = 0; n < Cluster::MAX_NODES; n++) {
-            const Cluster::Node* node = Cluster::get_node(n);
-            if (!node) continue;
-            kprint("\n  Node "); itoa(node->id, buf); kprint(buf);
-            kprint(": "); kprint(node->name);
-            kprint(" (");
-            uint32_t ip = node->ip_address;
-            itoa((ip >> 24) & 0xFF, buf); kprint(buf); kprint(".");
-            itoa((ip >> 16) & 0xFF, buf); kprint(buf); kprint(".");
-            itoa((ip >> 8) & 0xFF, buf); kprint(buf); kprint(".");
-            itoa(ip & 0xFF, buf); kprint(buf);
-            kprint(":");
-            itoa(node->port, buf); kprint(buf);
-            kprint(")");
-            if (n == Cluster::get_local_id()) kprint(" [self]");
+        kprint("\nCluster Status:");
+        kprint("\n  Local: "); kprint(Cluster::get_local_name());
+        uint32_t ip_h = Network::ntohl(Cluster::get_local_ip());
+        kprint(" (");
+        itoa((ip_h >> 24) & 0xFF, buf); kprint(buf); kprint(".");
+        itoa((ip_h >> 16) & 0xFF, buf); kprint(buf); kprint(".");
+        itoa((ip_h >> 8) & 0xFF, buf); kprint(buf); kprint(".");
+        itoa(ip_h & 0xFF, buf); kprint(buf);
+        kprint(")");
+        kprint("\n  Peers: "); itoa(Cluster::get_peer_count(), buf); kprint(buf);
+        const Cluster::JobResult* jr = Cluster::get_last_result();
+        if (jr && jr->completed) {
+            kprint("\n  Last job result: "); itoa(jr->result, buf); kprint(buf);
+        }
+    }
+    else if (safe_compare(cmd, "rjob")) {
+        // Usage: rjob <ip_last_octet> <numbers...>
+        // Example: rjob 2 10 20 30  -> sends sum job to 10.0.0.2
+        if (safe_strlen(arg) == 0) {
+            kprint("\nUsage: rjob <node_ip_last_byte> <n1> <n2> ...");
+            kprint("\n  Sends a sum job to the target node.");
+            kprint("\n  Example: rjob 2 100 200 300");
+        } else {
+            // Parse target IP last octet
+            int j = 0;
+            uint32_t target_last = 0;
+            while (arg[j] >= '0' && arg[j] <= '9') {
+                target_last = target_last * 10 + (uint32_t)(arg[j] - '0');
+                j++;
+            }
+            while (arg[j] == ' ') j++;
+
+            // Parse numbers for the sum job
+            uint32_t numbers[16];
+            int num_count = 0;
+            while (arg[j] && num_count < 16) {
+                uint32_t val = 0;
+                while (arg[j] >= '0' && arg[j] <= '9') {
+                    val = val * 10 + (uint32_t)(arg[j] - '0');
+                    j++;
+                }
+                numbers[num_count++] = val;
+                while (arg[j] == ' ') j++;
+            }
+
+            if (num_count == 0) {
+                kprint("\nNo numbers provided for sum job");
+            } else {
+                uint32_t target_ip = Network::htonl(0x0A000000 | target_last);
+                char buf[16];
+                kprint("\nSending sum job (");
+                itoa(num_count, buf); kprint(buf);
+                kprint(" values) to 10.0.0.");
+                itoa(target_last, buf); kprint(buf);
+
+                if (Cluster::submit_job(target_ip, 1, (const uint8_t*)numbers, num_count * 4)) {
+                    kprint(" ... sent!");
+                } else {
+                    kprint(" ... FAILED (ARP not resolved? Try 'discover' first)");
+                }
+            }
         }
     }
     else if (safe_compare(cmd, "intinfo")) {
