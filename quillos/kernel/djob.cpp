@@ -115,23 +115,45 @@ namespace DJob {
     // Decision: pick the node (including self) with the fewest tasks.
     // ================================================================
 
+    static uint32_t round_robin_counter = 0;
+
     static uint32_t pick_target() {
         uint32_t local_load = get_local_load();
-        uint32_t best_ip = 0;    // 0 = local
-        uint32_t best_load = local_load;
+
+        // Collect available peers with fresh load data
+        struct { uint32_t ip; uint32_t load; } candidates[MAX_NODES];
+        uint32_t num_candidates = 0;
 
         for (uint32_t i = 0; i < MAX_NODES; i++) {
             if (!node_loads[i].valid) continue;
-            // Only consider nodes seen recently (within 10 seconds)
             if (ticks - node_loads[i].last_updated > 10000) continue;
+            candidates[num_candidates].ip = node_loads[i].ip;
+            candidates[num_candidates].load = node_loads[i].task_count;
+            num_candidates++;
+        }
 
-            if (node_loads[i].task_count < best_load) {
-                best_load = node_loads[i].task_count;
-                best_ip = node_loads[i].ip;
+        if (num_candidates == 0) return 0; // No peers — run locally
+
+        // Find the minimum load across all nodes (including self)
+        uint32_t min_load = local_load;
+        for (uint32_t i = 0; i < num_candidates; i++) {
+            if (candidates[i].load < min_load) min_load = candidates[i].load;
+        }
+
+        // If a remote node has strictly less load, send there
+        for (uint32_t i = 0; i < num_candidates; i++) {
+            if (candidates[i].load < local_load) {
+                return candidates[i].ip;
             }
         }
 
-        return best_ip;
+        // Loads are equal — round-robin between local and peers
+        round_robin_counter++;
+        uint32_t total = 1 + num_candidates; // local + peers
+        uint32_t pick = round_robin_counter % total;
+
+        if (pick == 0) return 0; // Local
+        return candidates[(pick - 1) % num_candidates].ip;
     }
 
     // ================================================================
